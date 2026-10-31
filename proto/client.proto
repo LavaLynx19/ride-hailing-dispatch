@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package dispatch.client;
+
+message LatLng {
+  double lat = 1;
+  double lng = 2;
+}
+
+message LocationPing {
+  string driver_id = 1;
+  LatLng position = 2;
+  int64 reported_at_ms = 3;
+}
+
+message Offer {
+  string offer_id = 1;
+  string ride_request_id = 2;
+  LatLng pickup = 3;
+  int64 expires_at_ms = 4;
+}
+
+message OfferGone {
+  string offer_id = 1;
+}
+
+message Accept {
+  string offer_id = 1;
+}
+
+message Decline {
+  string offer_id = 1;
+}
+
+// A trip event recorded while the driver was out of contact, sent on reconnect.
+message BufferedTripEvent {
+  string trip_id = 1;
+  string event = 2;
+  LatLng position = 3;
+  int64 occurred_at_ms = 4;
+}
+
+message DriverToServer {
+  oneof message {
+    LocationPing location_ping = 1;
+    Accept accept = 2;
+    Decline decline = 3;
+    BufferedTripEvent buffered_trip_event = 4;
+  }
+}
+
+message ServerToDriver {
+  oneof message {
+    Offer offer = 1;
+    OfferGone offer_gone = 2;
+  }
+}
+
+message QuoteRequest {
+  string rider_id = 1;
+  LatLng pickup = 2;
+}
+
+message Quote {
+  string quote_id = 1;
+  double surge_multiplier = 2;
+  int64 expires_at_ms = 3;
+}
+
+message RideRequest {
+  string ride_request_id = 1;
+  string quote_id = 2;
+}
+
+message OfferProgress {
+  string ride_request_id = 1;
+  string status = 2;
+}
+
+message TripStatus {
+  string trip_id = 1;
+  string ride_request_id = 2;
+  string status = 3;
+}
+
+message RiderToServer {
+  oneof message {
+    QuoteRequest quote_request = 1;
+    RideRequest ride_request = 2;
+  }
+}
+
+message ServerToRider {
+  oneof message {
+    Quote quote = 1;
+    OfferProgress offer_progress = 2;
+    TripStatus trip_status = 3;
+  }
+}

@@ -1,0 +1,54 @@
+name: ride-hailing-dispatch
+
+x-shard: &shard
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    target: shard
+  image: ride-hailing-dispatch/shard
+
+x-postgres: &postgres
+  image: postgres:18
+  environment:
+    POSTGRES_DB: dispatch
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -d dispatch"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+
+services:
+  postgres-a:
+    <<: *postgres
+    volumes:
+      - postgres-a:/var/lib/postgresql
+
+  postgres-b:
+    <<: *postgres
+    volumes:
+      - postgres-b:/var/lib/postgresql
+
+  shard-a:
+    <<: *shard
+    depends_on:
+      postgres-a:
+        condition: service_healthy
+
+  shard-b:
+    <<: *shard
+    depends_on:
+      postgres-b:
+        condition: service_healthy
+
+  simulator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: simulator
+    image: ride-hailing-dispatch/simulator
+    cpus: 2
+
+volumes:
+  postgres-a:
+  postgres-b:

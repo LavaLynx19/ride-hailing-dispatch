@@ -1,0 +1,141 @@
+# Architecture
+
+Requirements are in [README.md](README.md), terms in [CONTEXT.md](CONTEXT.md).
+
+## System topology
+
+```
+ Simulator (demand replay + synthetic drivers)
+        │ WebSockets
+        ▼
+ ┌─ Shard A ───────────────┐   gRPC    ┌─ Shard B ───────────────┐
+ │ Location index (memory) │◄─────────►│ Same components         │
+ │ Matcher, ETA, Surge     │           │                         │
+ │ Ping log (disk)         │           │                         │
+ │ Postgres (Trips, etc.)  │           │                         │
+ └─────────────────────────┘           └─────────────────────────┘
+        All containers run inside one Linux VM on macOS
+```
+
+- **Shards:** one container per Shard, plus one Postgres per Shard.
+- **Load generator:** runs inside the VM with its own CPU limit, so latency isn't distorted by the macOS network boundary.
+- **Known limit:** the VM's CPU and memory cap all results, and every report must state them.
+
+## Decisions and alternatives
+
+| Concern | Chosen | Alternatives considered | Why chosen |
+|---|---|---|---|
+| Language | Rust | Go (GC tail latency), Java (memory footprint) | Predictable latency and small footprint leave more of the laptop for load |
+| Shard isolation | Containers per Shard | OS processes (harder fault injection), one process with swappable transport (two setups) | Easy partitions and resource limits |
+| Live location | In-memory index per Shard, with a ping log behind it | Redis-style store (extra hop, hides the index), broker first (more Staleness, heavy) | Fastest path, and still supports replay |
+| Ping retention | Rolling window, compressed | Runs only (no history for Reconciliation), keep everything (about 100 GB a day at 100k) | Predictable disk use, and supports disputes |
+| Trip and Reservation state | Postgres per Shard | Shard-local WAL (you own storage correctness), Raft per Shard (triples processes, repeats KV store project) | Constraints enforce one active Trip per driver within a Shard |
+| Geo grid | H3 | S2 (less uniform neighbours), geohash (shape varies by latitude) | Uniform neighbour distance suits radius search and surge blending |
+| Shard map | Explicit, versioned Cell → Shard table | Hash of parent (nearly every match is cross-shard), parent ranges (can't split downtown) | Handles uneven density, with boundaries drawn deliberately |
+| Shard RPC | gRPC | Custom TCP (you own framing and retries), NATS (message system in the commit path) | Typed contracts and mature Rust support |
+| Client connection | WebSockets | gRPC streams (weak browser support), UDP pings (blurs the no-drops test) | One connection for pings and offers, and suits later apps |
+| Batch solver | Auction algorithm | Hungarian (run time threatens 2s p99), greedy (weak answer on whether batching helps) | Near-optimal, and can stop early at a deadline |
+| Simple ETA | Live speeds from pings | Fixed speed, learned zone-hour speeds | Reacts to conditions using the system's own data |
+| Surge | Feedback controller per Cell | Smoothed ratio (slow on spikes), stepped hysteresis (jumps at Cell edges) | Directly addresses oscillation |
+| Demand data | NYC TLC HVFHV records | Chicago TNC (times rounded to 15 minutes), Porto GPS (about 442 taxis) | Largest and most recent option with usable timing, pending the checks below |
+| Pickup points | OSM-weighted points, calibrated from older NYC GPS taxi data | Uniform within zone (erases hot spots) | Records only give zones; this uses both street/venue evidence and observed patterns |
+
+### Dependencies
+
+Versions and maintenance status are checked before each is added.
+
+| Need | Chosen | Alternatives considered | Why chosen |
+|---|---|---|---|
+| Async runtime | Tokio | None separately | Required by `tonic` |
+| gRPC | `tonic` | See Shard RPC above | Main Rust gRPC option |
+| Postgres client | `sqlx` | `tokio-postgres` (no query checks), `diesel` (more abstraction) | SQL checked at compile time; builds need a database or cached metadata |
+| H3 | `h3o` | C bindings (poorly maintained), own subset (big detour) | See Decision Log: "h3o instead of C H3 bindings" |
+| WebSockets | `tokio-tungstenite` | `axum` (more overhead) | Bare socket server for the ping path |
+| Dataset preprocessing | Python + DuckDB, offline only | Rust `parquet`/`arrow` (slower to iterate), GeoPandas (heavier) | Quick to change; handles remote Parquet well; Python stays out of the services |
+| Message encoding | Protobuf | JSON (larger, slower to parse) | Compact, and shares schemas with gRPC; harder to inspect while debugging |
+
+### Dataset facts (checked 2026-10-31)
+
+- **HVFHV demand:** Parquet, available to September 2026, about 510 MB for that month. `request_datetime` has one-second values and locations are taxi zone IDs. A 2M-row sample spanned about 3.3 days, averaging about 7 requests/s.
+- **Older GPS calibration:** TLC's current 2015 and 2016 Parquet files have zone IDs only. Exact coordinates come from NYC Open Data, datasets `2yzn-sicd` (2015) and `uacg-pexx` (2016).
+
+## Matching and assignment
+
+1. A Ride Request gets a Quote, with its Surge Multiplier locked for a validity window.
+2. The auction solver picks a Direct Offer each Batch Window. Boundary searches query neighbouring Shards over gRPC.
+3. On timeout or decline, or based on local supply, the request widens to a Broadcast.
+4. Offers can overlap. Accept is atomic and is the only commit point.
+5. A cross-shard Accept uses a Reservation: reserve the driver on their Shard, then confirm the rider on theirs.
+
+**Reservation crash recovery:** peer check is the fast path and expiry is the backstop. A restarted Shard asks its peer whether to complete or abort. If that doesn't resolve it in time, the Reservation expires and any late confirm is rejected. Whichever resolves first must win, and tests must cover the race between them.
+
+**Driver ownership:** an idle driver belongs to the Shard for their current location. A driver on a Trip stays with the Shard that owns the Trip until it ends.
+
+**Failure rule:** Postgres enforces the invariant within a Shard, and the Reservation enforces it across Shards.
+
+## Data model
+
+Conceptual only; schemas are set in PLAN or CODE.
+
+| Entity | Lives in | Notes |
+|---|---|---|
+| Driver location | Memory, plus ping log | Latest position by Cell; history kept in the log |
+| Ride Request | Postgres | Pickup, Quote, status |
+| Offer | Postgres | Direct Offer or Broadcast; many can be open per driver |
+| Reservation | Postgres | Driver's Shard, with expiry |
+| Trip | Postgres | At most one active per driver (unique constraint) |
+| Shard map | Versioned table | Cell → Shard |
+
+## API contract (outline)
+
+- **Driver WebSocket:** Location Pings in; offers and offer-gone notices out; Accept and decline in; buffered trip events in on reconnect.
+- **Rider WebSocket:** Quote and Ride Request in; offer progress and Trip status out.
+- **Shard gRPC:** boundary driver search, reserve, confirm, abort, Reservation status.
+
+## Experiments
+
+Each run records its seed, load, Staleness budget and VM limits. A result counts only if the assignment invariant held.
+
+- **Run mode:** all runs use the wall clock on the normal runtime. Demand and driver decisions are seeded, so policies see the same inputs. Timing still varies, so runs are compared statistically over repeats, and a failing seed may not fail again.
+- **Staleness budget:** p99 under 5s with 4s pings. If load is too much, shift to p99 under 8s with 4s pings. Each result states which applied.
+- **100k feasibility:** a strict 30-minute run with the 2s p99 met, no pings dropped and no invariant violations, generator included. Each attempt also reports the knee, the load where latency starts to bend.
+
+## Known risks
+
+- **Synthetic echo:** with live-speed ETA and feedback-controlled surge, simulated drivers partly reflect the model that was given to them. Those results show control behaviour and don't prove real-world accuracy.
+- **Synthesised hot spots:** Cell-level hot spots come from the pickup-point method, so Cell-level results inherit its assumptions.
+- **Postgres cost:** a commit on each Accept and one Postgres per Shard reduce the load the VM can reach.
+- **Connection cost:** 100k WebSockets use memory and file descriptors inside the VM.
+
+## Open items
+
+- Docker VM: 14 CPUs and about 7.7 GiB of memory as currently configured, on a 24 GiB machine. Likely too little memory for the 100k test; revisit at the first load ramp in Phase 2.
+- Values: silent-driver, offer and Reservation timeouts; Batch Window (must fit 2s p99); retention length; ping log format; number of Shards.
+- Supply threshold for widening, and how to stop it flapping.
+- Quote validity window and controller tuning.
+- Hot-Shard behaviour under a 50x spike.
+- Reusing `payment-ledger` for the final phase; reading it needs explicit permission.
+
+## Decision Log
+
+### Results must not depend on a single time mode
+
+Status: superseded by "Seeded inputs instead of a simulated clock"
+
+Latency numbers need real time, but policy comparisons need reproducible runs, so the system supports both a wall clock and a seeded simulated clock. This forces time, randomness and I/O behind interfaces from the start, which is hard to retrofit.
+
+### Accept owner is a two-step Reservation, not a global store
+
+A global assignment store would be the easiest way to keep assignments correct, but it would be a bottleneck and would undercut geo-partitioning. Reservations keep ownership in the Shards, at the cost of a crash window that expiry and peer checks must close.
+
+### Seeded inputs instead of a simulated clock
+
+Experiments seed demand and driver decisions but run on the normal runtime, with no simulated clock or fake I/O. This avoids building and maintaining a simulation layer. The cost is that runs are only statistically comparable, and timing-dependent bugs such as Reservation races may not reproduce from a seed.
+
+### h3o instead of C H3 bindings
+
+C bindings were chosen for reference behaviour, but Phase 0 found them poorly maintained (`h3ron-h3-sys` last updated 2023), while `h3o` is active. `h3o` also removes the C build step and FFI on the hot path. Its results are spot-checked against reference H3 output. Note that the `h3` crate is an unrelated HTTP/3 library.
+
+### Use NYC trip data without a published licence
+
+No licence or explicit grant was found: NYC.gov reserves rights in its content, while the Open Data Law says data is "open by default". The project uses the data, publishes only aggregate results with attribution and never redistributes raw files. A small residual risk remains.
