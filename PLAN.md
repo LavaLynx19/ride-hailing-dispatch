@@ -17,7 +17,7 @@ Requirements are in [README.md](README.md), design in [ARCHITECTURE.md](ARCHITEC
 
 ### Phase 1: Simulator and baseline (§P1)
 - [x] 1.1 Prepare one month of demand from HVFHV records (§P1)
-- [ ] 1.2 Generate pickup points from OSM weights and older GPS calibration
+- [x] 1.2 Generate pickup points from OSM weights and older GPS calibration (§P1)
 - [ ] 1.3 Build synthetic driver behaviour model
 - [ ] 1.4 Build seeded load generator over WebSockets
 - [ ] 1.5 Build single-Shard naive greedy matcher
