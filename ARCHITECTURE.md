@@ -56,7 +56,9 @@ Versions and maintenance status are checked before each is added.
 
 ### Dataset facts (checked 2026-10-31)
 
-- **HVFHV demand:** Parquet, available to September 2026, about 510 MB for that month. `request_datetime` has one-second values and locations are taxi zone IDs. A 2M-row sample spanned about 3.3 days, averaging about 7 requests/s.
+- **HVFHV demand:** Parquet, available to September 2026, about 510 MB for that month. `request_datetime` has one-second values and locations are taxi zone IDs. September 2026 averages about 8.0 requests/s after filtering, with a busiest minute of 1033 (about 17/s).
+- **Round-time spikes:** the highest per-second counts (135 at most) fall exactly on times such as 05:00:00 and 05:30:00. They look like scheduled rides rather than live requests, though the data doesn't label them. They stay in the demand file unchanged, as deliberate test scenarios for batched matching and surge.
+- **Dropped rows:** pickups in unknown zones and impossible trips, including about 250k rows where pickup precedes the request. Trips with an unknown or outside-NYC dropoff are kept, so dropoff points need separate handling.
 - **Older GPS calibration:** TLC's current 2015 and 2016 Parquet files have zone IDs only. Exact coordinates come from NYC Open Data, datasets `2yzn-sicd` (2015) and `uacg-pexx` (2016).
 
 ## Matching and assignment
