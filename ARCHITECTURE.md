@@ -53,6 +53,9 @@ Versions and maintenance status are checked before each is added.
 | WebSockets | `tokio-tungstenite` | `axum` (more overhead) | Bare socket server for the ping path |
 | Dataset preprocessing | Python + DuckDB, offline only | Rust `parquet`/`arrow` (slower to iterate), GeoPandas (heavier) | Quick to change; handles remote Parquet well; Python stays out of the services |
 | Message encoding | Protobuf | JSON (larger, slower to parse) | Compact, and shares schemas with gRPC; harder to inspect while debugging |
+| Stream splitting | `futures-util` | Hand-written socket polling (more code on the hot path) | Splits each WebSocket into separate send and receive halves |
+| Protobuf runtime | `prost` | None separately | Used by `tonic`'s generated code |
+| Seeded randomness | Own SplitMix64 | `rand` (a dependency, and its streams can change between versions) | A few lines of stdlib-only code keep seeded runs stable |
 
 ### Dataset facts (checked 2026-10-31)
 
@@ -61,6 +64,15 @@ Versions and maintenance status are checked before each is added.
 - **Dropped rows:** pickups in unknown zones and impossible trips, including about 250k rows where pickup precedes the request. Trips with an unknown or outside-NYC dropoff are kept, so dropoff points need separate handling.
 - **Older GPS calibration:** TLC's current 2015 and 2016 Parquet files have zone IDs only. Exact coordinates come from NYC Open Data, datasets `2yzn-sicd` (2015) and `uacg-pexx` (2016). The sample is ten minutes from every hour of one 2016 week, about 451k usable rows, because the portal serves only about 36 KB/s.
 - **Pickup points:** 65,133 weighted cells of about 100 m across all 263 zones. Each zone blends GPS and OSM shares, trusting GPS more as its pickup count grows. The venue weight of 5 and the 100-pickup half-trust point are assumptions, not measurements. OSM data requires attribution under its licence (ODbL).
+- **Driver supply:** derived per zone and hour of week from September trips, assuming 60% utilisation. Citywide online drivers range from 3,165 to 35,083, median 22,695, at supply scale 1. The data only records served trips, so it can't show real shortages; the separate supply and demand scales create them. Reaching 100k drivers needs a supply scale of about 2.9 at peak.
+- **Driver model:** offer acceptance falls with pickup distance and response delay is uniform from 2s to 15s, both assumed because the data records no declines. Drivers don't yet respond to price, which Phase 6's surge experiments will need.
+
+### Phase 1 baseline (checked 2026-10-31)
+
+- **Matcher:** one Shard, in memory, nearest idle driver first, one open offer per driver. This is deliberately simpler than the overlapping offers in the final design.
+- **Assumed values:** offer timeout 20s and pickup speed 25 km/h. Neither is measured yet.
+- **Setup:** `deploy/baseline.yml` runs one Shard and the load generator, without Postgres.
+- **WebSocket read buffer:** 4 KiB per connection on both sides. The library default of 128 KiB ran the VM out of memory with 25,250 drivers; each side fell from about 3.3 GiB to about 350 MiB early in a peak run.
 
 ## Matching and assignment
 
@@ -92,7 +104,7 @@ Conceptual only; schemas are set in PLAN or CODE.
 ## API contract (outline)
 
 - **Driver WebSocket:** Location Pings in; offers and offer-gone notices out; Accept and decline in; buffered trip events in on reconnect.
-- **Rider WebSocket:** Quote and Ride Request in; offer progress and Trip status out.
+- **Rider WebSocket:** Quote and Ride Request (with pickup) in; offer progress, Trip assignment and Trip status out.
 - **Shard gRPC:** boundary driver search, reserve, confirm, abort, Reservation status.
 
 ## Experiments
