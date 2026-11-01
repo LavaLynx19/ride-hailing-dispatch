@@ -1,0 +1,436 @@
+//! Drives a plan against a server over WebSockets, in wall-clock time.
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use futures_util::{SinkExt, StreamExt};
+use prost::Message as _;
+use protocol::client::{
+    Accept, Decline, DriverToServer, LatLng, LocationPing, Offer, QuoteRequest, RideRequest, RiderToServer,
+    ServerToDriver, ServerToRider, TripEvent, TripEventKind, driver_to_server, rider_to_server, server_to_driver,
+    server_to_rider,
+};
+use tokio::time::{Instant, sleep_until};
+use tokio_tungstenite::connect_async_with_config;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::driver::{Leg, respond_to_offer, trip_legs};
+use crate::metrics::{TripTimes, record_once};
+use crate::plan::{DriverPlan, Plan, TripPlan};
+use crate::position::Position;
+use crate::rng::Rng;
+
+/// Assumed, not measured: drivers head to the pickup at a constant speed.
+const PICKUP_SPEED_KM_PER_SECOND: f64 = 25.0 / 3600.0;
+const RECONNECT_SECONDS: f64 = 1.0;
+const RIDER_GIVES_UP_SECONDS: f64 = 4.0 * 3600.0;
+const SECONDS_PER_HOUR: f64 = 3600.0;
+
+#[derive(Debug, Clone)]
+pub struct RunConfig {
+    pub driver_url: String,
+    pub rider_url: String,
+    pub seed: u64,
+    pub ping_interval_seconds: f64,
+    /// Simulated seconds per real second. Runs use 1; only tests speed time up.
+    pub time_scale: f64,
+    /// How far into its clock hour the run starts, because supply changes on the clock hour.
+    pub seconds_into_first_hour: f64,
+}
+
+#[derive(Debug, Default)]
+pub struct Counters {
+    pub driver_connections: AtomicU64,
+    pub connect_failures: AtomicU64,
+    pub pings: AtomicU64,
+    pub offers: AtomicU64,
+    pub accepts: AtomicU64,
+    pub declines: AtomicU64,
+    pub offers_gone: AtomicU64,
+    pub trips_assigned: AtomicU64,
+    pub trips_completed: AtomicU64,
+    pub ride_requests: AtomicU64,
+    pub riders_finished: AtomicU64,
+}
+
+impl Counters {
+    pub fn get(counter: &AtomicU64) -> u64 {
+        counter.load(Ordering::Relaxed)
+    }
+
+    fn add(counter: &AtomicU64) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+struct Run {
+    config: RunConfig,
+    trips: Vec<TripPlan>,
+    times: Arc<[TripTimes]>,
+    counters: Arc<Counters>,
+    started: Instant,
+}
+
+impl Run {
+    fn instant(&self, sim_seconds: f64) -> Instant {
+        self.started + Duration::from_secs_f64(sim_seconds.max(0.0) / self.config.time_scale)
+    }
+
+    fn sim_now(&self) -> f64 {
+        self.started.elapsed().as_secs_f64() * self.config.time_scale
+    }
+}
+
+fn wall_clock_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+fn lat_lng(position: Position) -> LatLng {
+    LatLng { lat: position.lat, lng: position.lng }
+}
+
+fn position(lat_lng: Option<LatLng>) -> Option<Position> {
+    lat_lng.map(|point| Position { lat: point.lat, lng: point.lng })
+}
+
+/// The library's default 128 KiB read buffer per connection would dominate memory at
+/// tens of thousands of sockets, and these messages are far smaller than a buffer this size.
+fn socket_config() -> WebSocketConfig {
+    WebSocketConfig::default().read_buffer_size(4 * 1024)
+}
+
+/// Runs the plan until `duration_seconds` of simulated time has passed.
+pub async fn run_plan(
+    config: RunConfig,
+    plan: Plan,
+    duration_seconds: f64,
+    counters: Arc<Counters>,
+) -> Arc<[TripTimes]> {
+    let times: Arc<[TripTimes]> = plan.trips.iter().map(|_| TripTimes::default()).collect();
+    let run = Arc::new(Run {
+        config,
+        trips: plan.trips,
+        times: Arc::clone(&times),
+        counters,
+        started: Instant::now(),
+    });
+    let mut tasks = Vec::with_capacity(plan.drivers.len() + run.trips.len());
+    for driver in plan.drivers {
+        tasks.push(tokio::spawn(run_driver(Arc::clone(&run), driver)));
+    }
+    for index in 0..run.trips.len() {
+        tasks.push(tokio::spawn(run_rider(Arc::clone(&run), index)));
+    }
+    sleep_until(run.instant(duration_seconds)).await;
+    for task in &tasks {
+        task.abort();
+    }
+    for task in tasks {
+        let _ = task.await;
+    }
+    times
+}
+
+/// Joins consecutive online clock hours into `(start, end)` spans of seconds since the run began.
+pub fn online_spans(online: &[bool], seconds_into_first_hour: f64) -> Vec<(f64, f64)> {
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for (hour, is_online) in online.iter().enumerate() {
+        if !is_online {
+            continue;
+        }
+        let start = (hour as f64 * SECONDS_PER_HOUR - seconds_into_first_hour).max(0.0);
+        let end = (hour + 1) as f64 * SECONDS_PER_HOUR - seconds_into_first_hour;
+        match spans.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => spans.push((start, end)),
+        }
+    }
+    spans
+}
+
+async fn run_driver(run: Arc<Run>, plan: DriverPlan) {
+    let mut rng = Rng::stream(run.config.seed, plan.stream);
+    let mut state = DriverState { at: plan.position, trip: None };
+    for (start, end) in online_spans(&plan.online, run.config.seconds_into_first_hour) {
+        sleep_until(run.instant(start)).await;
+        while run.sim_now() < end || state.trip.is_some() {
+            match driver_session(&run, &plan.id, &mut rng, &mut state, end).await {
+                Ok(()) => break,
+                Err(()) => {
+                    Counters::add(&run.counters.connect_failures);
+                    tokio::time::sleep(Duration::from_secs_f64(RECONNECT_SECONDS / run.config.time_scale)).await;
+                }
+            }
+        }
+    }
+}
+
+struct DriverState {
+    at: Position,
+    trip: Option<ActiveTrip>,
+}
+
+struct ActiveTrip {
+    id: String,
+    ride: usize,
+    legs: VecDeque<Leg>,
+    events: VecDeque<(f64, TripEventKind)>,
+}
+
+struct PendingResponse {
+    at_seconds: f64,
+    offer_id: String,
+    accept: bool,
+}
+
+impl DriverState {
+    fn position_at(&mut self, now: f64) -> Position {
+        if let Some(trip) = &mut self.trip {
+            while trip.legs.len() > 1 && trip.legs[0].end_seconds <= now {
+                trip.legs.pop_front();
+            }
+            if let Some(leg) = trip.legs.front() {
+                self.at = leg.position_at(now);
+            }
+        }
+        self.at
+    }
+}
+
+fn start_trip(run: &Run, state: &mut DriverState, trip_id: String, ride_request_id: &str, now: f64) -> bool {
+    let Some((ride, plan)) = ride_index(ride_request_id).and_then(|index| Some((index, run.trips.get(index)?))) else {
+        return false;
+    };
+    record_once(&run.times[ride].assigned, now);
+    let from = state.at;
+    let arrive = now + from.distance_km(plan.pickup) / PICKUP_SPEED_KM_PER_SECOND;
+    let finish = arrive + plan.trip_seconds;
+    let mut legs = VecDeque::from([Leg { from, to: plan.pickup, start_seconds: now, end_seconds: arrive }]);
+    legs.extend(trip_legs(plan.pickup, plan.dropoff, arrive, plan.trip_seconds));
+    let events = VecDeque::from([
+        (arrive, TripEventKind::Arrived),
+        (arrive, TripEventKind::Started),
+        (finish, TripEventKind::Completed),
+    ]);
+    state.trip = Some(ActiveTrip { id: trip_id, ride, legs, events });
+    true
+}
+
+fn ride_request_id(index: usize) -> String {
+    format!("r{index}")
+}
+
+fn ride_index(id: &str) -> Option<usize> {
+    id.strip_prefix('r')?.parse().ok()
+}
+
+async fn driver_session(
+    run: &Run,
+    id: &str,
+    rng: &mut Rng,
+    state: &mut DriverState,
+    end_seconds: f64,
+) -> Result<(), ()> {
+    let (socket, _) = connect_async_with_config(&run.config.driver_url, Some(socket_config()), false).await.map_err(|_| ())?;
+    Counters::add(&run.counters.driver_connections);
+    let (mut sink, mut stream) = socket.split();
+
+    let ping_every = run.config.ping_interval_seconds;
+    // Spread first pings across the interval, so a shift start isn't a burst.
+    let mut next_ping = run.sim_now() + rng.next_f64() * ping_every;
+    let mut pending: Vec<PendingResponse> = Vec::new();
+
+    loop {
+        let now = run.sim_now();
+        if now >= end_seconds && state.trip.is_none() {
+            let _ = sink.close().await;
+            return Ok(());
+        }
+        let next_event = state.trip.as_ref().and_then(|trip| trip.events.front()).map(|(at, _)| *at);
+        let next_response = pending.iter().map(|response| response.at_seconds).reduce(f64::min);
+        let mut wake = next_ping;
+        for candidate in [next_event, next_response, state.trip.is_none().then_some(end_seconds)] {
+            wake = candidate.map_or(wake, |at| wake.min(at));
+        }
+
+        tokio::select! {
+            () = sleep_until(run.instant(wake)) => {
+                let now = run.sim_now();
+                if now >= next_ping {
+                    let ping = driver_to_server::Message::LocationPing(LocationPing {
+                        driver_id: id.to_owned(),
+                        position: Some(lat_lng(state.position_at(now))),
+                        reported_at_ms: wall_clock_ms(),
+                    });
+                    send_driver(&mut sink, ping).await?;
+                    Counters::add(&run.counters.pings);
+                    next_ping += ping_every;
+                }
+                let mut index = 0;
+                while index < pending.len() {
+                    if pending[index].at_seconds > now {
+                        index += 1;
+                        continue;
+                    }
+                    let response = pending.swap_remove(index);
+                    let message = if response.accept {
+                        Counters::add(&run.counters.accepts);
+                        driver_to_server::Message::Accept(Accept { offer_id: response.offer_id })
+                    } else {
+                        Counters::add(&run.counters.declines);
+                        driver_to_server::Message::Decline(Decline { offer_id: response.offer_id })
+                    };
+                    send_driver(&mut sink, message).await?;
+                }
+                loop {
+                    let due = state.trip.as_ref().and_then(|trip| trip.events.front()).filter(|(at, _)| *at <= now);
+                    let Some(&(_, kind)) = due else { break };
+                    let at = state.position_at(now);
+                    let Some(trip) = state.trip.as_mut() else { break };
+                    trip.events.pop_front();
+                    if kind == TripEventKind::Arrived {
+                        record_once(&run.times[trip.ride].arrived, now);
+                    }
+                    let event = TripEvent {
+                        trip_id: trip.id.clone(),
+                        kind: kind.into(),
+                        position: Some(lat_lng(at)),
+                        occurred_at_ms: wall_clock_ms(),
+                        buffered: false,
+                    };
+                    send_driver(&mut sink, driver_to_server::Message::TripEvent(event)).await?;
+                    if kind == TripEventKind::Completed {
+                        state.trip = None;
+                        Counters::add(&run.counters.trips_completed);
+                    }
+                }
+            }
+            frame = stream.next() => {
+                let Some(Ok(frame)) = frame else { return Err(()) };
+                let Message::Binary(bytes) = frame else { continue };
+                let decoded = ServerToDriver::decode(bytes).map_err(|_| ())?;
+                match decoded.message {
+                    Some(server_to_driver::Message::Offer(offer)) => {
+                        Counters::add(&run.counters.offers);
+                        if let Some(times) = ride_index(&offer.ride_request_id).and_then(|index| run.times.get(index)) {
+                            record_once(&times.first_offer, run.sim_now());
+                        }
+                        pending.push(answer_offer(run, rng, state, offer));
+                    }
+                    Some(server_to_driver::Message::OfferGone(gone)) => {
+                        Counters::add(&run.counters.offers_gone);
+                        pending.retain(|response| response.offer_id != gone.offer_id);
+                    }
+                    Some(server_to_driver::Message::TripAssigned(assigned)) => {
+                        Counters::add(&run.counters.trips_assigned);
+                        pending.clear();
+                        let now = run.sim_now();
+                        state.position_at(now);
+                        if !start_trip(run, state, assigned.trip_id, &assigned.ride_request_id, now) {
+                            return Err(());
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+}
+
+fn answer_offer(run: &Run, rng: &mut Rng, state: &mut DriverState, offer: Offer) -> PendingResponse {
+    let now = run.sim_now();
+    let at = state.position_at(now);
+    // A driver on a Trip can't take another; the server should learn that quickly.
+    if state.trip.is_some() {
+        return PendingResponse { at_seconds: now, offer_id: offer.offer_id, accept: false };
+    }
+    let pickup_km = position(offer.pickup).map_or(0.0, |pickup| at.distance_km(pickup));
+    let response = respond_to_offer(rng, pickup_km);
+    PendingResponse { at_seconds: now + response.after_seconds, offer_id: offer.offer_id, accept: response.accept }
+}
+
+async fn send_driver<S>(sink: &mut S, message: driver_to_server::Message) -> Result<(), ()>
+where
+    S: SinkExt<Message> + Unpin,
+{
+    let frame = DriverToServer { message: Some(message) }.encode_to_vec();
+    sink.send(Message::Binary(frame.into())).await.map_err(|_| ())
+}
+
+async fn send_rider<S>(sink: &mut S, message: rider_to_server::Message) -> Result<(), ()>
+where
+    S: SinkExt<Message> + Unpin,
+{
+    let frame = RiderToServer { message: Some(message) }.encode_to_vec();
+    sink.send(Message::Binary(frame.into())).await.map_err(|_| ())
+}
+
+async fn run_rider(run: Arc<Run>, index: usize) {
+    let trip = run.trips[index];
+    sleep_until(run.instant(trip.request_at_seconds)).await;
+    let give_up = run.instant(trip.request_at_seconds + RIDER_GIVES_UP_SECONDS);
+    if rider_session(&run, index, trip.pickup, give_up).await.is_err() {
+        Counters::add(&run.counters.connect_failures);
+    }
+}
+
+async fn rider_session(run: &Run, index: usize, pickup: Position, give_up: Instant) -> Result<(), ()> {
+    let (socket, _) = connect_async_with_config(&run.config.rider_url, Some(socket_config()), false).await.map_err(|_| ())?;
+    let (mut sink, mut stream) = socket.split();
+    let id = ride_request_id(index);
+    let quote = QuoteRequest { rider_id: format!("rider-{index}"), pickup: Some(lat_lng(pickup)) };
+    send_rider(&mut sink, rider_to_server::Message::QuoteRequest(quote)).await?;
+
+    loop {
+        let frame = tokio::time::timeout_at(give_up, stream.next()).await.map_err(|_| ())?;
+        let Some(Ok(frame)) = frame else { return Err(()) };
+        let Message::Binary(bytes) = frame else { continue };
+        match ServerToRider::decode(bytes).map_err(|_| ())?.message {
+            Some(server_to_rider::Message::Quote(quote)) => {
+                let request = RideRequest {
+                    ride_request_id: id.clone(),
+                    quote_id: quote.quote_id,
+                    pickup: Some(lat_lng(pickup)),
+                };
+                send_rider(&mut sink, rider_to_server::Message::RideRequest(request)).await?;
+                Counters::add(&run.counters.ride_requests);
+                record_once(&run.times[index].requested, run.sim_now());
+            }
+            Some(server_to_rider::Message::TripStatus(status)) if status.status == "completed" => {
+                Counters::add(&run.counters.riders_finished);
+                let _ = sink.close().await;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn online_spans_join_consecutive_hours() {
+        assert_eq!(
+            online_spans(&[true, true, false, true], 0.0),
+            vec![(0.0, 7200.0), (10800.0, 14400.0)]
+        );
+    }
+
+    #[test]
+    fn online_spans_follow_the_clock_hour_when_a_run_starts_mid_hour() {
+        // A 17:45 start: the 18:00 hour begins 900 seconds in, not 3600.
+        assert_eq!(online_spans(&[true, false], 2700.0), vec![(0.0, 900.0)]);
+        assert_eq!(online_spans(&[false, true], 2700.0), vec![(900.0, 4500.0)]);
+    }
+
+    #[test]
+    fn ride_ids_round_trip() {
+        assert_eq!(ride_index(&ride_request_id(42)), Some(42));
+        assert_eq!(ride_index("nope"), None);
+    }
+}

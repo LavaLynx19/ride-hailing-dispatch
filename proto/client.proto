@@ -32,12 +32,25 @@ message Decline {
   string offer_id = 1;
 }
 
-// A trip event recorded while the driver was out of contact, sent on reconnect.
-message BufferedTripEvent {
+message TripAssigned {
   string trip_id = 1;
-  string event = 2;
+  string ride_request_id = 2;
+}
+
+enum TripEventKind {
+  TRIP_EVENT_KIND_UNSPECIFIED = 0;
+  TRIP_EVENT_KIND_ARRIVED = 1;
+  TRIP_EVENT_KIND_STARTED = 2;
+  TRIP_EVENT_KIND_COMPLETED = 3;
+}
+
+message TripEvent {
+  string trip_id = 1;
+  TripEventKind kind = 2;
   LatLng position = 3;
   int64 occurred_at_ms = 4;
+  // Recorded while the driver was out of contact and sent on reconnect.
+  bool buffered = 5;
 }
 
 message DriverToServer {
@@ -45,7 +58,7 @@ message DriverToServer {
     LocationPing location_ping = 1;
     Accept accept = 2;
     Decline decline = 3;
-    BufferedTripEvent buffered_trip_event = 4;
+    TripEvent trip_event = 4;
   }
 }
 
@@ -53,6 +66,7 @@ message ServerToDriver {
   oneof message {
     Offer offer = 1;
     OfferGone offer_gone = 2;
+    TripAssigned trip_assigned = 3;
   }
 }
 
@@ -70,6 +84,7 @@ message Quote {
 message RideRequest {
   string ride_request_id = 1;
   string quote_id = 2;
+  LatLng pickup = 3;
 }
 
 message OfferProgress {
