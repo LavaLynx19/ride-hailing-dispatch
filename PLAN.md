@@ -16,13 +16,13 @@ Requirements are in [README.md](README.md), design in [ARCHITECTURE.md](ARCHITEC
 - [>] 0.7 Verify `sqlx` metadata in the container build (§P0) → defer until: Phase 3 adds the first query
 
 ### Phase 1: Simulator and baseline (§P1)
-- [ ] 1.1 Prepare one month of demand from HVFHV records
-- [ ] 1.2 Generate pickup points from OSM weights and older GPS calibration
-- [ ] 1.3 Build synthetic driver behaviour model
-- [ ] 1.4 Build seeded load generator over WebSockets
-- [ ] 1.5 Build single-Shard naive greedy matcher
-- [ ] 1.6 Build metrics and run record
-- [ ] 1.7 Publish baseline result
+- [x] 1.1 Prepare one month of demand from HVFHV records (§P1)
+- [x] 1.2 Generate pickup points from OSM weights and older GPS calibration (§P1)
+- [x] 1.3 Build synthetic driver behaviour model (§P1)
+- [x] 1.4 Build seeded load generator over WebSockets (§P1)
+- [x] 1.5 Build single-Shard naive greedy matcher (§P1)
+- [x] 1.6 Build metrics and run record (§P1)
+- [x] 1.7 Publish baseline result (§P1; `experiments/baseline.md`)
 
 ### Phase 2: Ingestion and geo-index (§P2)
 - [ ] 2.1 Build in-memory location index on H3
@@ -56,6 +56,7 @@ Requirements are in [README.md](README.md), design in [ARCHITECTURE.md](ARCHITEC
 - [ ] 6.2 Build Quote with locked Surge Multiplier
 - [ ] 6.3 Build feedback controller for surge
 - [ ] 6.4 Run surge stability experiment
+- [>] 6.5 Discuss artificial spike creation (for example at airports) using the user's proposed solution, and refine it (§P6) → defer until: start of Phase 6
 
 ### Phase 7: Reconciliation (§P7)
 - [ ] 7.1 Build mid-trip tolerance and driver-event buffering
@@ -97,7 +98,7 @@ Make the correctness rules real before optimising matching.
 ### P4: Matching policy
 Add the auction solver and widening, and start producing tradeoff results.
 
-**Verify:** auction results are compared with brute force on small cases; request-to-first-offer stays under 2s at p99 with the chosen Batch Window; policies are compared over repeated runs with the spread reported; widening doesn't flap under the test load.
+**Verify:** with r1 at d1 = 1 min and d2 = 4 min, and r2 at d1 = 3 min and d2 = 15 min, the auction assigns r1→d2 and r2→d1 (7 min total) where greedy gives 16; experiments report total, p95 and worst-case wait; auction results are compared with brute force on small cases; request-to-first-offer stays under 2s at p99 with the chosen Batch Window; policies are compared over repeated runs with the spread reported; widening doesn't flap under the test load.
 
 ### P5: Geo-sharding
 Split the metro into Shards, the riskiest phase for correctness. Seeded runs won't reliably reproduce races, so tests must rely on repeated fault runs and detailed logs.
@@ -106,6 +107,8 @@ Split the metro into Shards, the riskiest phase for correctness. Seeded runs won
 
 ### P6: ETA and pricing
 Add live-speed ETA and the surge controller.
+
+Start with task 6.5, before the controller design is final. Experiments cover both sharp round-time spikes and broad peak-hour demand, and check whether surge should react to the pre-booked-looking spikes.
 
 **Verify:** ETA error is reported against simulated arrival; a rider's locked Quote is honoured; surge settles after a demand step without sustained oscillation; the report states the limits of synthetic driver behaviour.
 

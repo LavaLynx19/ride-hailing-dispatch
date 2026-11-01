@@ -1,0 +1,29 @@
+# Phase 1 baseline: one Shard and the load generator, with no Postgres yet.
+name: ride-hailing-baseline
+
+x-limits: &limits
+  ulimits:
+    nofile: 200000
+
+services:
+  shard:
+    <<: *limits
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: shard
+    image: ride-hailing-dispatch/shard
+    command: ["0.0.0.0:7001", "0.0.0.0:7002"]
+
+  simulator:
+    <<: *limits
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: simulator
+    image: ride-hailing-dispatch/simulator
+    cpus: 2
+    depends_on:
+      - shard
+    volumes:
+      - ../data/raw:/data:ro
