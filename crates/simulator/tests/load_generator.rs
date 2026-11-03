@@ -117,6 +117,7 @@ async fn serve_rider(server: Arc<Server>, listener: TcpListener) {
                             Some(rider_to_server::Message::RideRequest(request)) => {
                                 *server.ride_request.lock().await = request.ride_request_id.clone();
                                 let offer = server_to_driver::Message::Offer(Offer {
+                                    staleness_ms: 0,
                                     offer_id: "o1".into(),
                                     ride_request_id: request.ride_request_id,
                                     pickup: request.pickup,
@@ -159,8 +160,8 @@ async fn one_trip_runs_from_request_to_completion() {
     let drivers = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let riders = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = RunConfig {
-        driver_url: format!("ws://{}", drivers.local_addr().unwrap()),
-        rider_url: format!("ws://{}", riders.local_addr().unwrap()),
+        driver_urls: vec![format!("ws://{}", drivers.local_addr().unwrap())],
+        rider_urls: vec![format!("ws://{}", riders.local_addr().unwrap())],
         seed: 5,
         ping_interval_seconds: 4.0,
         time_scale: TIME_SCALE,

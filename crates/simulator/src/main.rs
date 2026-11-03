@@ -66,8 +66,8 @@ async fn main() -> Result<(), String> {
         demand_scale: number(&args, "demand-scale", Some(1.0))?,
     };
     let config = RunConfig {
-        driver_url: required(&args, "driver-url")?.to_owned(),
-        rider_url: required(&args, "rider-url")?.to_owned(),
+        driver_urls: required(&args, "driver-url")?.split(',').map(str::to_owned).collect(),
+        rider_urls: required(&args, "rider-url")?.split(',').map(str::to_owned).collect(),
         seed: scenario.seed,
         ping_interval_seconds: number(&args, "ping-seconds", Some(4.0))?,
         time_scale: 1.0,
@@ -124,6 +124,8 @@ async fn main() -> Result<(), String> {
         ("ride_requests", get(&counters.ride_requests)),
         ("riders_finished", get(&counters.riders_finished)),
     ];
-    print!("{}", run_record(&info, &summarise(&times, warmup_seconds), &counter_values, &assumptions()));
+    let offer_staleness = counters.offer_staleness.lock().map_err(|_| "staleness samples unavailable")?;
+    let summary = summarise(&times, &offer_staleness, warmup_seconds);
+    print!("{}", run_record(&info, &summary, &counter_values, &assumptions()));
     Ok(())
 }

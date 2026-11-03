@@ -17,14 +17,20 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::dispatcher::{Dispatcher, Effect};
+use crate::ping_log::{PingLog, PingRecord};
 
 const TICK: Duration = Duration::from_millis(250);
 const QUOTE_VALID_MS: i64 = 60_000;
 
 type Outbox = UnboundedSender<Vec<u8>>;
 
+struct DriverLink {
+    outbox: Outbox,
+    reported_at_ms: i64,
+}
+
 enum Event {
-    DriverPing { driver: String, position: Position, outbox: Outbox },
+    DriverPing { driver: String, position: Position, reported_at_ms: i64, outbox: Outbox },
     DriverGone { driver: String, outbox: Outbox },
     Accept { driver: String, offer: String },
     Decline { driver: String, offer: String },
@@ -49,17 +55,24 @@ fn rider_frame(message: server_to_rider::Message) -> Vec<u8> {
     ServerToRider { message: Some(message) }.encode_to_vec()
 }
 
-pub async fn serve(drivers: TcpListener, riders: TcpListener) {
+/// Takes several listeners per kind because one client address can only reach one server
+/// port about 28,000 times at once, far short of the load target.
+pub async fn serve(drivers: Vec<TcpListener>, riders: Vec<TcpListener>, ping_log: Option<PingLog>) {
     let (events, inbox) = unbounded_channel();
-    tokio::spawn(accept_drivers(drivers, events.clone()));
-    tokio::spawn(accept_riders(riders, events));
-    run_dispatcher(inbox).await;
+    for listener in drivers {
+        tokio::spawn(accept_drivers(listener, events.clone()));
+    }
+    for listener in riders {
+        tokio::spawn(accept_riders(listener, events.clone()));
+    }
+    drop(events);
+    run_dispatcher(inbox, ping_log).await;
 }
 
-async fn run_dispatcher(mut inbox: UnboundedReceiver<Event>) {
+async fn run_dispatcher(mut inbox: UnboundedReceiver<Event>, ping_log: Option<PingLog>) {
     let started = Instant::now();
     let mut dispatcher = Dispatcher::default();
-    let mut driver_links: HashMap<String, Outbox> = HashMap::new();
+    let mut driver_links: HashMap<String, DriverLink> = HashMap::new();
     let mut rider_links: HashMap<String, Outbox> = HashMap::new();
     let mut quotes = 0_u64;
     let mut tick = tokio::time::interval(TICK);
@@ -71,13 +84,21 @@ async fn run_dispatcher(mut inbox: UnboundedReceiver<Event>) {
                 let Some(event) = event else { return };
                 let now = started.elapsed().as_secs_f64();
                 match event {
-                    Event::DriverPing { driver, position, outbox } => {
-                        driver_links.insert(driver.clone(), outbox);
+                    Event::DriverPing { driver, position, reported_at_ms, outbox } => {
+                        if let Some(log) = ping_log.as_ref().filter(|_| position.is_finite()) {
+                            log.append(&PingRecord {
+                                driver: driver.clone(),
+                                reported_at_ms,
+                                received_at_ms: unix_ms(),
+                                position,
+                            });
+                        }
+                        driver_links.insert(driver.clone(), DriverLink { outbox, reported_at_ms });
                         dispatcher.location_ping(&driver, position, now)
                     }
                     Event::DriverGone { driver, outbox } => {
                         // A reconnect may already have replaced this link.
-                        if driver_links.get(&driver).is_some_and(|link| link.same_channel(&outbox)) {
+                        if driver_links.get(&driver).is_some_and(|link| link.outbox.same_channel(&outbox)) {
                             driver_links.remove(&driver);
                             dispatcher.driver_disconnected(&driver);
                         }
@@ -109,23 +130,26 @@ async fn run_dispatcher(mut inbox: UnboundedReceiver<Event>) {
 fn deliver(
     effects: Vec<Effect>,
     started: Instant,
-    drivers: &HashMap<String, Outbox>,
+    drivers: &HashMap<String, DriverLink>,
     riders: &mut HashMap<String, Outbox>,
 ) {
     let to_driver = |driver: &str, frame: Vec<u8>| {
         if let Some(link) = drivers.get(driver) {
-            let _ = link.send(frame);
+            let _ = link.outbox.send(frame);
         }
     };
     for effect in effects {
         match effect {
             Effect::Offer { driver, offer, ride, pickup, expires_at } => {
                 let until_expiry = expires_at - started.elapsed().as_secs_f64();
+                let now_ms = unix_ms();
+                let reported_at_ms = drivers.get(&driver).map_or(now_ms, |link| link.reported_at_ms);
                 let frame = driver_frame(server_to_driver::Message::Offer(Offer {
                     offer_id: offer,
                     ride_request_id: ride,
                     pickup: Some(LatLng { lat: pickup.lat, lng: pickup.lng }),
-                    expires_at_ms: unix_ms() + (until_expiry * 1000.0) as i64,
+                    expires_at_ms: now_ms + (until_expiry * 1000.0) as i64,
+                    staleness_ms: (now_ms - reported_at_ms).max(0),
                 }));
                 to_driver(&driver, frame);
             }
@@ -185,6 +209,7 @@ async fn accept_drivers(listener: TcpListener, events: UnboundedSender<Event>) {
                                 Event::DriverPing {
                                     driver: ping.driver_id,
                                     position: position(ping.position),
+                                    reported_at_ms: ping.reported_at_ms,
                                     outbox: outbox.clone(),
                                 }
                             }

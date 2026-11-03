@@ -20,14 +20,14 @@ async fn every_trip_completes_with_each_accept_winning_one_trip() {
     let drivers_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let riders_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = RunConfig {
-        driver_url: format!("ws://{}", drivers_listener.local_addr().unwrap()),
-        rider_url: format!("ws://{}", riders_listener.local_addr().unwrap()),
+        driver_urls: vec![format!("ws://{}", drivers_listener.local_addr().unwrap())],
+        rider_urls: vec![format!("ws://{}", riders_listener.local_addr().unwrap())],
         seed: 11,
         ping_interval_seconds: 4.0,
         time_scale: TIME_SCALE,
         seconds_into_first_hour: 0.0,
     };
-    tokio::spawn(shard::server::serve(drivers_listener, riders_listener));
+    tokio::spawn(shard::server::serve(vec![drivers_listener], vec![riders_listener], None));
 
     let drivers = (0..20)
         .map(|index| DriverPlan {
@@ -49,7 +49,11 @@ async fn every_trip_completes_with_each_accept_winning_one_trip() {
     let counters = Arc::new(Counters::default());
     let times = run_plan(config, Plan { drivers, trips }, 900.0, Arc::clone(&counters)).await;
 
-    let summary = summarise(&times, 0.0);
+    let staleness = counters.offer_staleness.lock().unwrap().clone();
+    let summary = summarise(&times, &staleness, 0.0);
+    let at_offer = summary.staleness_at_offer.as_ref().expect("offers report Staleness");
+    // Real seconds, since the Shard's clock isn't accelerated: pings are 40 ms apart here.
+    assert!(at_offer.max < 2.0, "Staleness max {}", at_offer.max);
     assert_eq!(summary.measured_requests, 40);
     assert_eq!(summary.never_assigned, 0);
     assert_eq!(Counters::get(&counters.connect_failures), 0);
