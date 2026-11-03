@@ -72,6 +72,4 @@ The Surge Multiplier is locked at Quote for a validity window.
 
 ## Open questions
 
-Technical decisions and their open items are tracked in [ARCHITECTURE.md](ARCHITECTURE.md). One requirement is still open here:
-
-- What load levels go on the scaling curve?
+Technical decisions and their open items are tracked in [ARCHITECTURE.md](ARCHITECTURE.md). No requirements are open here. The scaling curve uses 25k, 50k, 75k and 100k drivers.

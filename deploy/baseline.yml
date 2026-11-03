@@ -13,7 +13,15 @@ services:
       dockerfile: deploy/Dockerfile
       target: shard
     image: ride-hailing-dispatch/shard
-    command: ["0.0.0.0:7001", "0.0.0.0:7002"]
+    # Several ports, because one client address can reach one server port only about 28,000 times.
+    command:
+      - "0.0.0.0:7001,0.0.0.0:7003,0.0.0.0:7005,0.0.0.0:7007"
+      - "0.0.0.0:7002,0.0.0.0:7004,0.0.0.0:7006,0.0.0.0:7008"
+      - /ping-log
+    # A new named volume belongs to root, and the image has no directory prepared for the app user.
+    user: root
+    volumes:
+      - ping-log:/ping-log
 
   simulator:
     <<: *limits
@@ -27,3 +35,6 @@ services:
       - shard
     volumes:
       - ../data/raw:/data:ro
+
+volumes:
+  ping-log:
