@@ -63,11 +63,12 @@ pub struct Summary {
     pub request_to_first_offer: Option<Distribution>,
     pub request_to_assignment: Option<Distribution>,
     pub request_to_pickup_arrival: Option<Distribution>,
+    pub staleness_at_offer: Option<Distribution>,
 }
 
 /// Summarises requests made at or after `warmup_seconds`, so that the empty start
 /// of a run, when every driver is idle, doesn't flatter the result.
-pub fn summarise(times: &[TripTimes], warmup_seconds: f64) -> Summary {
+pub fn summarise(times: &[TripTimes], offer_staleness: &[(f64, f64)], warmup_seconds: f64) -> Summary {
     let measured: Vec<_> = times
         .iter()
         .filter_map(|trip| read(&trip.requested).filter(|at| *at >= warmup_seconds).map(|at| (at, trip)))
@@ -84,6 +85,9 @@ pub fn summarise(times: &[TripTimes], warmup_seconds: f64) -> Summary {
         request_to_first_offer: distribution(offers),
         request_to_assignment: distribution(assigned),
         request_to_pickup_arrival: distribution(arrived),
+        staleness_at_offer: distribution(
+            offer_staleness.iter().filter(|(at, _)| *at >= warmup_seconds).map(|(_, age)| *age).collect(),
+        ),
     }
 }
 
@@ -150,6 +154,7 @@ pub fn run_record(info: &RunInfo, summary: &Summary, counters: &[(&str, u64)], a
     json_distribution(&mut out, "request_to_first_offer_seconds", &summary.request_to_first_offer);
     json_distribution(&mut out, "request_to_assignment_seconds", &summary.request_to_assignment);
     json_distribution(&mut out, "request_to_pickup_arrival_seconds", &summary.request_to_pickup_arrival);
+    json_distribution(&mut out, "staleness_at_offer_seconds", &summary.staleness_at_offer);
     if out.ends_with(",\n") {
         out.truncate(out.len() - 2);
         out.push('\n');
@@ -203,7 +208,11 @@ mod tests {
     #[test]
     fn warmup_requests_are_excluded_and_unserved_ones_counted() {
         let trips = [trip(1.0, Some(1.5)), trip(10.0, Some(10.5)), trip(11.0, None)];
-        let summary = summarise(&trips, 5.0);
+        let staleness = [(1.0, 99.0), (6.0, 2.0), (7.0, 4.0)];
+        let summary = summarise(&trips, &staleness, 5.0);
+        let measured = summary.staleness_at_offer.as_ref().expect("offers after warmup");
+        assert_eq!(measured.count, 2, "offers during warmup are excluded");
+        assert_eq!(measured.max, 4.0);
         assert_eq!(summary.measured_requests, 2);
         assert_eq!(summary.never_offered, 1);
         assert_eq!(summary.request_to_first_offer.unwrap().max, 0.5);

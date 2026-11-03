@@ -25,10 +25,10 @@ Requirements are in [README.md](README.md), design in [ARCHITECTURE.md](ARCHITEC
 - [x] 1.7 Publish baseline result (§P1; `experiments/baseline.md`)
 
 ### Phase 2: Ingestion and geo-index (§P2)
-- [ ] 2.1 Build in-memory location index on H3
-- [ ] 2.2 Build ping log with rolling retention
-- [ ] 2.3 Measure Staleness and spot-check `h3o` against reference H3 output
-- [ ] 2.4 Run first load ramp and knee report
+- [x] 2.1 Build in-memory location index on H3 (§P2)
+- [x] 2.2 Build ping log with rolling retention (§P2)
+- [x] 2.3 Measure Staleness and spot-check `h3o` against reference H3 output (§P2)
+- [x] 2.4 Run first load ramp and knee report (§P2; `experiments/load_ramp.md`)
 
 ### Phase 3: Assignment on one Shard (§P3)
 - [ ] 3.1 Build Postgres schema and Trip lifecycle

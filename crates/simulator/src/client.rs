@@ -1,7 +1,7 @@
 //! Drives a plan against a server over WebSockets, in wall-clock time.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -31,8 +31,10 @@ const SECONDS_PER_HOUR: f64 = 3600.0;
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
-    pub driver_url: String,
-    pub rider_url: String,
+    /// Connections spread across these, since one client address can only reach one server
+    /// port about 28,000 times at once.
+    pub driver_urls: Vec<String>,
+    pub rider_urls: Vec<String>,
     pub seed: u64,
     pub ping_interval_seconds: f64,
     /// Simulated seconds per real second. Runs use 1; only tests speed time up.
@@ -54,6 +56,8 @@ pub struct Counters {
     pub trips_completed: AtomicU64,
     pub ride_requests: AtomicU64,
     pub riders_finished: AtomicU64,
+    /// When each offer arrived, and the Staleness of the location it was based on, in seconds.
+    pub offer_staleness: Mutex<Vec<(f64, f64)>>,
 }
 
 impl Counters {
@@ -157,7 +161,7 @@ async fn run_driver(run: Arc<Run>, plan: DriverPlan) {
     for (start, end) in online_spans(&plan.online, run.config.seconds_into_first_hour) {
         sleep_until(run.instant(start)).await;
         while run.sim_now() < end || state.trip.is_some() {
-            match driver_session(&run, &plan.id, &mut rng, &mut state, end).await {
+            match driver_session(&run, &plan.id, plan.stream, &mut rng, &mut state, end).await {
                 Ok(()) => break,
                 Err(()) => {
                     Counters::add(&run.counters.connect_failures);
@@ -227,14 +231,19 @@ fn ride_index(id: &str) -> Option<usize> {
     id.strip_prefix('r')?.parse().ok()
 }
 
+fn pick_url(urls: &[String], key: u64) -> &str {
+    &urls[(key % urls.len() as u64) as usize]
+}
+
 async fn driver_session(
     run: &Run,
     id: &str,
+    plan_stream: u64,
     rng: &mut Rng,
     state: &mut DriverState,
     end_seconds: f64,
 ) -> Result<(), ()> {
-    let (socket, _) = connect_async_with_config(&run.config.driver_url, Some(socket_config()), false).await.map_err(|_| ())?;
+    let (socket, _) = connect_async_with_config(pick_url(&run.config.driver_urls, plan_stream), Some(socket_config()), false).await.map_err(|_| ())?;
     Counters::add(&run.counters.driver_connections);
     let (mut sink, mut stream) = socket.split();
 
@@ -315,6 +324,9 @@ async fn driver_session(
                 match decoded.message {
                     Some(server_to_driver::Message::Offer(offer)) => {
                         Counters::add(&run.counters.offers);
+                        if let Ok(mut samples) = run.counters.offer_staleness.lock() {
+                            samples.push((run.sim_now(), offer.staleness_ms as f64 / 1000.0));
+                        }
                         if let Some(times) = ride_index(&offer.ride_request_id).and_then(|index| run.times.get(index)) {
                             record_once(&times.first_offer, run.sim_now());
                         }
@@ -378,7 +390,7 @@ async fn run_rider(run: Arc<Run>, index: usize) {
 }
 
 async fn rider_session(run: &Run, index: usize, pickup: Position, give_up: Instant) -> Result<(), ()> {
-    let (socket, _) = connect_async_with_config(&run.config.rider_url, Some(socket_config()), false).await.map_err(|_| ())?;
+    let (socket, _) = connect_async_with_config(pick_url(&run.config.rider_urls, index as u64), Some(socket_config()), false).await.map_err(|_| ())?;
     let (mut sink, mut stream) = socket.split();
     let id = ride_request_id(index);
     let quote = QuoteRequest { rider_id: format!("rider-{index}"), pickup: Some(lat_lng(pickup)) };

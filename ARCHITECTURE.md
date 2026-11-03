@@ -52,6 +52,7 @@ Versions and maintenance status are checked before each is added.
 | H3 | `h3o` | C bindings (poorly maintained), own subset (big detour) | See Decision Log: "h3o instead of C H3 bindings" |
 | WebSockets | `tokio-tungstenite` | `axum` (more overhead) | Bare socket server for the ping path |
 | Dataset preprocessing | Python + DuckDB, offline only | Rust `parquet`/`arrow` (slower to iterate), GeoPandas (heavier) | Quick to change; handles remote Parquet well; Python stays out of the services |
+| Ping log compression | `zstd` | LZ4 (larger files), gzip (slower), none (far more disk) | Usually the smallest files, so more history fits; adds C bindings to the build |
 | Message encoding | Protobuf | JSON (larger, slower to parse) | Compact, and shares schemas with gRPC; harder to inspect while debugging |
 | Stream splitting | `futures-util` | Hand-written socket polling (more code on the hot path) | Splits each WebSocket into separate send and receive halves |
 | Protobuf runtime | `prost` | None separately | Used by `tonic`'s generated code |
@@ -73,6 +74,30 @@ Versions and maintenance status are checked before each is added.
 - **Assumed values:** offer timeout 20s and pickup speed 25 km/h. Neither is measured yet.
 - **Setup:** `deploy/baseline.yml` runs one Shard and the load generator, without Postgres.
 - **WebSocket read buffer:** 4 KiB per connection on both sides. The library default of 128 KiB ran the VM out of memory with 25,250 drivers; each side fell from about 3.3 GiB to about 350 MiB early in a peak run.
+
+### Location index (checked 2026-11-01)
+
+- **Search:** walks H3 rings outward from the query point, and stops once no unsearched Cell could hold anything closer. It matches a full scan on sampled queries, including moved and removed drivers.
+- **Contents:** only idle drivers, matching the current matcher. Drivers on offers or Trips are added back when they become idle.
+- **Resolution:** 9, kept after the Phase 2 ramp, where first offer was 2 ms at p99 at 100k drivers (`experiments/load_ramp.md`). The table below is from synthetic clustered points:
+
+| Idle drivers | Res 8 | Res 9 | Res 10 | Full scan |
+|---|---:|---:|---:|---:|
+| 100,000 | 119 µs | 23 µs | 6 µs | 762 µs |
+| 25,000 | 29 µs | 6 µs | 2 µs | 190 µs |
+| 1,000 | 2 µs | 2 µs | 6 µs | 8 µs |
+| 20 | 5 µs | 12 µs | 19 µs | 0.2 µs |
+
+Resolution 9 stays fast at every load measured. Resolution 10 is faster when dense, but costs more when supply is thin and splits drivers across more Cells.
+
+### Ping log
+
+- **Format:** segment files of records, each with a length and checksum. Closed segments are compressed with zstd. A torn or damaged record ends reading of that segment, and anything after it is lost.
+- **Writing:** a background thread writes pings and syncs every 1s, so matching never waits on the disk. A crash can lose about the last second of pings.
+- **When the writer falls behind:** a queue holds 200,000 pings, about 8s at 100k drivers. Beyond that, pings are dropped and counted, and any drop fails the strict 100k test.
+- **Retention:** 24 hours with a 20 GB cap, and the cap wins. Only closed segments are deleted, oldest first, so open segments can briefly push the total over the cap.
+- **Rotation:** at 64 MiB or 5 minutes.
+- **Not yet measured:** compression ratio and throughput under real load, which task 2.4 covers.
 
 ## Matching and assignment
 
@@ -124,8 +149,8 @@ Each run records its seed, load, Staleness budget and VM limits. A result counts
 
 ## Open items
 
-- Docker VM: 14 CPUs and about 7.7 GiB of memory as currently configured, on a 24 GiB machine. Likely too little memory for the 100k test; revisit at the first load ramp in Phase 2.
-- Values: silent-driver, offer and Reservation timeouts; Batch Window (must fit 2s p99); retention length; ping log format; number of Shards.
+- Docker VM: 14 CPUs and about 7.7 GiB of memory as currently configured, on a 24 GiB machine. Enough for a 30-minute 100k run without Postgres, at about 3.3 GiB peak, but memory keeps growing during runs (`experiments/load_ramp.md`). Revisit once Postgres is added.
+- Values: silent-driver, offer and Reservation timeouts; Batch Window (must fit 2s p99); number of Shards.
 - Supply threshold for widening, and how to stop it flapping.
 - Quote validity window and controller tuning.
 - Hot-Shard behaviour under a 50x spike.

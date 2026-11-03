@@ -18,6 +18,8 @@ message Offer {
   string ride_request_id = 2;
   LatLng pickup = 3;
   int64 expires_at_ms = 4;
+  // Age of the driver's latest Location Ping when the offer was made; for measuring Staleness.
+  int64 staleness_ms = 5;
 }
 
 message OfferGone {

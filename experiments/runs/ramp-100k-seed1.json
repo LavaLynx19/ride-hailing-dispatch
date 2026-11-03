@@ -1,0 +1,31 @@
+{
+  "name": "ramp-100k-seed1",
+  "git_commit": "eb28b5d-dirty",
+  "seed": 1,
+  "plan_hash": "48447f2a47965cd1",
+  "start_epoch": 1789407900,
+  "duration_seconds": 1800,
+  "warmup_seconds": 900,
+  "supply_scale": 3.926,
+  "demand_scale": 3.926,
+  "ping_seconds": 4,
+  "staleness_budget_p99_seconds": 5,
+  "vm_cpus": "14",
+  "vm_memory_gib": "7.7",
+  "simulator_cpus": "2",
+  "drivers_planned": 100009,
+  "trips_planned": 67646,
+  "invariant_checked": false,
+  "assumptions": {"utilisation": 0.6, "accept_at_zero_km": 0.95, "accept_half_distance_km": 5, "response_min_seconds": 2, "response_max_seconds": 15, "pickup_speed_kmh": 25, "offer_timeout_seconds": 20},
+  "summary": {
+    "measured_requests": 34536,
+    "never_offered": 0,
+    "never_assigned": 319,
+    "never_reached_pickup": 573,
+    "request_to_first_offer_seconds": {"count": 34536, "p50": 0.000, "p95": 0.001, "p99": 0.002, "max": 0.163},
+    "request_to_assignment_seconds": {"count": 34217, "p50": 8.793, "p95": 14.785, "p99": 22.473, "max": 41.437},
+    "request_to_pickup_arrival_seconds": {"count": 33963, "p50": 11.204, "p95": 35.805, "p99": 58.428, "max": 241.590},
+    "staleness_at_offer_seconds": {"count": 36445, "p50": 1.981, "p95": 3.793, "p99": 3.960, "max": 4.738}
+  },
+  "counters": {"driver_connections": 100009, "connect_failures": 99, "pings": 42593367, "offers": 71307, "accepts": 67327, "declines": 3632, "offers_gone": 0, "trips_assigned": 67327, "trips_completed": 26505, "ride_requests": 67646, "riders_finished": 26505}
+}

@@ -11,6 +11,7 @@ prost = "0.14.4"
 protocol = { version = "0.1.0", path = "../protocol" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tokio-tungstenite = "0.30.0"
+zstd = "0.14.3"
 
 [dev-dependencies]
 simulator = { path = "../simulator" }

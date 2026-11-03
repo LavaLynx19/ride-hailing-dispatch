@@ -1,11 +1,12 @@
 //! Baseline matcher: each Ride Request is offered, in arrival order, to the nearest
-//! idle driver. It's deliberately naive, so later policies have something to beat.
+//! idle driver, found through the location index. It's deliberately naive, so later policies have something to beat.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use geo::Position;
+use geo::{LocationIndex, Position, Resolution};
 
 pub const OFFER_TIMEOUT_SECONDS: f64 = 20.0;
+const INDEX_RESOLUTION: Resolution = Resolution::Nine;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
@@ -34,10 +35,10 @@ struct OpenOffer {
     expires_at: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Dispatcher {
     drivers: HashMap<String, Driver>,
-    idle: HashSet<String>,
+    idle: LocationIndex,
     rides: HashMap<String, Ride>,
     waiting: VecDeque<String>,
     offers: HashMap<String, OpenOffer>,
@@ -45,18 +46,39 @@ pub struct Dispatcher {
     next_id: u64,
 }
 
+impl Default for Dispatcher {
+    fn default() -> Self {
+        Self {
+            drivers: HashMap::new(),
+            idle: LocationIndex::new(INDEX_RESOLUTION),
+            rides: HashMap::new(),
+            waiting: VecDeque::new(),
+            offers: HashMap::new(),
+            trips: HashMap::new(),
+            next_id: 0,
+        }
+    }
+}
+
 impl Dispatcher {
     pub fn location_ping(&mut self, driver: &str, position: Position, now: f64) -> Vec<Effect> {
+        if !position.is_finite() {
+            return Vec::new();
+        }
         let entry = self.drivers.entry(driver.to_owned()).or_insert(Driver { position, online: false });
         entry.position = position;
         if entry.online {
+            // Only idle drivers are in the index, and upserting one follows their move.
+            if self.idle.contains(driver) {
+                self.idle.upsert(driver, position);
+            }
             return Vec::new();
         }
         entry.online = true;
         let busy = self.offers.values().any(|offer| offer.driver == driver)
             || self.trips.values().any(|(trip_driver, _)| trip_driver == driver);
         if !busy {
-            self.idle.insert(driver.to_owned());
+            self.idle.upsert(driver, position);
         }
         self.dispatch(now)
     }
@@ -139,27 +161,13 @@ impl Dispatcher {
     }
 
     fn make_idle(&mut self, driver: &str) {
-        if self.drivers.get(driver).is_some_and(|entry| entry.online) {
-            self.idle.insert(driver.to_owned());
+        if let Some(entry) = self.drivers.get(driver).filter(|entry| entry.online) {
+            self.idle.upsert(driver, entry.position);
         }
     }
 
     fn nearest_idle(&self, ride: &Ride) -> Option<String> {
-        let mut best: Option<(&String, f64)> = None;
-        for id in &self.idle {
-            if ride.tried.contains(id) {
-                continue;
-            }
-            let distance = self.drivers[id].position.distance_km(ride.pickup);
-            // The id breaks ties, so the result doesn't depend on hash order.
-            let closer = best.is_none_or(|(best_id, best_distance)| {
-                distance < best_distance || (distance == best_distance && id < best_id)
-            });
-            if closer {
-                best = Some((id, distance));
-            }
-        }
-        best.map(|(id, _)| id.clone())
+        self.idle.nearest(ride.pickup, |id| !ride.tried.contains(id)).map(str::to_owned)
     }
 
     fn dispatch(&mut self, now: f64) -> Vec<Effect> {

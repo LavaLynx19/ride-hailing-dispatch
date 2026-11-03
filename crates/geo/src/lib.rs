@@ -1,3 +1,8 @@
+mod index;
+
+pub use h3o::Resolution;
+pub use index::LocationIndex;
+
 const EARTH_RADIUS_KM: f64 = 6371.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -7,6 +12,10 @@ pub struct Position {
 }
 
 impl Position {
+    pub fn is_finite(self) -> bool {
+        self.lat.is_finite() && self.lng.is_finite()
+    }
+
     pub fn distance_km(self, other: Position) -> f64 {
         let (lat1, lat2) = (self.lat.to_radians(), other.lat.to_radians());
         let d_lat = lat2 - lat1;
