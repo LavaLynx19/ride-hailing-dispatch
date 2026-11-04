@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE offers SET status = 'withdrawn', closed_at = now() WHERE status = 'open'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "da0461040df7c30d18afa84a5e59ed0d3e8b82dae7d44edd7ff4839990d7ffa8"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE trips SET status = 'started', started_at = now()\n                 WHERE id = $1 AND driver_id = $2 AND status IN ('assigned', 'arrived')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "07faee56e685b432f5aea366aeee0c877d282fe6bbf029eb4642e0d4cd535549"
+}

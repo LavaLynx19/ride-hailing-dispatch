@@ -3,14 +3,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use simulator::client::{Counters, RunConfig, run_plan};
+use simulator::client::{Counters, RunConfig, Silence, run_plan};
 use simulator::metrics::{RunInfo, run_record, summarise};
 use simulator::plan::{Scenario, ZonePoints, build_plan, parse_demand, parse_zone_exits};
 use simulator::supply::SupplyTable;
 
 const USAGE: &str = "usage: simulator --data-dir DIR --demand FILE --driver-url URL --rider-url URL \
 --seed N --start-epoch SECONDS --duration-seconds N [--supply-scale X] [--demand-scale X] [--ping-seconds X] \
-[--warmup-seconds X] [--name S] [--git-commit S] [--vm-cpus S] [--vm-memory-gib S] [--simulator-cpus S]";
+[--warmup-seconds X] [--name S] [--git-commit S] [--vm-cpus S] [--vm-memory-gib S] [--simulator-cpus S] \
+[--silent-probability X] [--database-url URL]
+
+With --database-url, the invariant checker runs against the Shard's Postgres after the run.";
+
+/// Assumed, not measured: how often an idle driver goes quiet with the socket still open.
+const SILENCE: Silence = Silence { probability: 0.05, min_seconds: 10.0, max_seconds: 60.0 };
 
 fn parse_args() -> Result<HashMap<String, String>, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,7 +48,7 @@ fn read(path: PathBuf) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn assumptions() -> [(&'static str, f64); 7] {
+fn assumptions(silence: Silence) -> [(&'static str, f64); 10] {
     [
         ("utilisation", 0.6),
         ("accept_at_zero_km", 0.95),
@@ -51,6 +57,9 @@ fn assumptions() -> [(&'static str, f64); 7] {
         ("response_max_seconds", 15.0),
         ("pickup_speed_kmh", 25.0),
         ("offer_timeout_seconds", 20.0),
+        ("silent_probability", silence.probability),
+        ("silent_min_seconds", silence.min_seconds),
+        ("silent_max_seconds", silence.max_seconds),
     ]
 }
 
@@ -72,7 +81,9 @@ async fn main() -> Result<(), String> {
         ping_interval_seconds: number(&args, "ping-seconds", Some(4.0))?,
         time_scale: 1.0,
         seconds_into_first_hour: scenario.start_epoch.rem_euclid(3600) as f64,
+        silence: Silence { probability: number(&args, "silent-probability", Some(SILENCE.probability))?, ..SILENCE },
     };
+    let silence = config.silence;
 
     let supply = SupplyTable::parse(&read(data.join("supply.csv"))?)?;
     let points = ZonePoints::parse(&read(data.join("pickup_points.csv"))?)?;
@@ -87,6 +98,30 @@ async fn main() -> Result<(), String> {
     let counters = Arc::new(Counters::default());
     let duration = Duration::from_secs(scenario.duration_seconds.max(0) as u64);
     let times = run_plan(config, plan, duration.as_secs_f64(), Arc::clone(&counters)).await;
+
+    let invariant = match args.get("database-url") {
+        Some(url) => {
+            let observed = counters.observations.lock().map_err(|_| "observations unavailable")?.clone();
+            let report = checker::check_database(url, &observed).await.map_err(|error| format!("invariant checker: {error}"))?;
+            eprintln!(
+                "invariant checker: {} with {} violations over {} Trips",
+                if report.passed() { "passed" } else { "FAILED" },
+                report.violations,
+                report.trips_in_postgres
+            );
+            for example in &report.examples {
+                eprintln!("  {example}");
+            }
+            Some(report)
+        }
+        None => {
+            eprintln!("no --database-url, so the invariant wasn't checked and this run can't pass the gate");
+            None
+        }
+    };
+    for failure in counters.failures.lock().map_err(|_| "failures unavailable")?.iter() {
+        eprintln!("failure: {failure}");
+    }
 
     let warmup_seconds = number(&args, "warmup-seconds", Some(0.0))?;
     let text = |name: &str| args.get(name).map_or("unknown", String::as_str);
@@ -107,13 +142,18 @@ async fn main() -> Result<(), String> {
         simulator_cpus: text("simulator-cpus"),
         drivers_planned,
         trips_planned,
-        // The invariant checker arrives in Phase 3; until then no result passes the gate.
-        invariant_checked: false,
+        invariant_checked: invariant.is_some(),
+        invariant_passed: invariant.as_ref().is_some_and(checker::Report::passed),
+        invariant_violations: invariant.as_ref().map_or(0, |report| report.violations),
     };
     let get = Counters::get;
     let counter_values = [
         ("driver_connections", get(&counters.driver_connections)),
-        ("connect_failures", get(&counters.connect_failures)),
+        ("driver_connect_failures", get(&counters.driver_connect_failures)),
+        ("driver_session_errors", get(&counters.driver_session_errors)),
+        ("rider_connect_failures", get(&counters.rider_connect_failures)),
+        ("rider_session_errors", get(&counters.rider_session_errors)),
+        ("silent_periods", get(&counters.silent_periods)),
         ("pings", get(&counters.pings)),
         ("offers", get(&counters.offers)),
         ("accepts", get(&counters.accepts)),
@@ -126,6 +166,6 @@ async fn main() -> Result<(), String> {
     ];
     let offer_staleness = counters.offer_staleness.lock().map_err(|_| "staleness samples unavailable")?;
     let summary = summarise(&times, &offer_staleness, warmup_seconds);
-    print!("{}", run_record(&info, &summary, &counter_values, &assumptions()));
+    print!("{}", run_record(&info, &summary, &counter_values, &assumptions(silence)));
     Ok(())
 }

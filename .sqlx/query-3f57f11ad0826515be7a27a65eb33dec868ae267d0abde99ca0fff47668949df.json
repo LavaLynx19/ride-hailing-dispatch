@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE ride_requests SET status = 'cancelled' WHERE status = 'open'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "3f57f11ad0826515be7a27a65eb33dec868ae267d0abde99ca0fff47668949df"
+}

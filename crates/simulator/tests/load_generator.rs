@@ -9,7 +9,7 @@ use protocol::client::{
     DriverToServer, Offer, Quote, RiderToServer, ServerToDriver, ServerToRider, TripAssigned, TripStatus,
     driver_to_server, rider_to_server, server_to_driver, server_to_rider,
 };
-use simulator::client::{Counters, RunConfig, run_plan};
+use simulator::client::{Counters, RunConfig, Silence, run_plan};
 use simulator::driver::Dropoff;
 use simulator::plan::{DriverPlan, Plan, TripPlan};
 use simulator::position::Position;
@@ -166,6 +166,7 @@ async fn one_trip_runs_from_request_to_completion() {
         ping_interval_seconds: 4.0,
         time_scale: TIME_SCALE,
         seconds_into_first_hour: 0.0,
+        silence: Silence::NONE,
     };
     tokio::spawn(serve_driver(Arc::clone(&server), drivers));
     tokio::spawn(serve_rider(Arc::clone(&server), riders));
@@ -179,7 +180,8 @@ async fn one_trip_runs_from_request_to_completion() {
     assert_eq!(Counters::get(&counters.trips_assigned), 1);
     assert_eq!(Counters::get(&counters.trips_completed), 1);
     assert_eq!(Counters::get(&counters.riders_finished), 1);
-    assert_eq!(Counters::get(&counters.connect_failures), 0);
+    assert_eq!(Counters::get(&counters.driver_connect_failures), 0);
+    assert_eq!(Counters::get(&counters.rider_connect_failures), 0);
     assert_eq!(server.observed.accepts.load(Ordering::Relaxed), 1);
     assert_eq!(server.observed.completed.load(Ordering::Relaxed), 1);
 

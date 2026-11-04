@@ -1,4 +1,4 @@
-# Phase 1 baseline: one Shard and the load generator, with no Postgres yet.
+# Experiment setup: one Shard with its Postgres, and the load generator.
 name: ride-hailing-baseline
 
 x-limits: &limits
@@ -6,6 +6,21 @@ x-limits: &limits
     nofile: 200000
 
 services:
+  # Throwaway experiment data, wiped with `down -v` before and after each run. Trust auth is
+  # safe only because no port is published: Postgres is reachable on the internal network alone.
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: dispatch
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dispatch"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgres:/var/lib/postgresql
+
   shard:
     <<: *limits
     build:
@@ -20,6 +35,11 @@ services:
       - /ping-log
     # A new named volume belongs to root, and the image has no directory prepared for the app user.
     user: root
+    environment:
+      DATABASE_URL: postgres://postgres@postgres/dispatch
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - ping-log:/ping-log
 
@@ -38,3 +58,4 @@ services:
 
 volumes:
   ping-log:
+  postgres:

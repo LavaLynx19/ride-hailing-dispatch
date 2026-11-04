@@ -113,9 +113,19 @@ Resolution 9 stays fast at every load measured. Resolution 10 is faster when den
 
 **Failure rule:** Postgres enforces the invariant within a Shard, and the Reservation enforces it across Shards.
 
+### Assignment on one Shard (decided 2026-11-03)
+
+- **Accept path:** the dispatcher checks an Accept against memory, marks the offer pending and hands the transaction to a separate task, so matching never waits on Postgres. The result comes back as an event. Concurrent Accepts race in Postgres, and its constraints decide the winner.
+- **Lost result:** if the connection fails mid-Accept, the outcome is looked up by offer once Postgres answers again, and only then is the driver told.
+- **Write order:** a Ride Request is stored before it is matched, and an offer is stored before it is sent, so every Accept refers to rows that exist.
+- **Overlapping offers:** Accept, the schema and the tests support a driver holding several offers and a Ride Request offered to several drivers. The Phase 3 matcher still sends one offer per driver, so results stay comparable with Phase 2. Broadcast in Phase 4 is the first policy to send overlaps.
+- **Silent drivers:** with the socket open but no pings, an idle driver leaves the location index after 12s (3 missed pings), and an open offer is withdrawn after 8s (2 missed pings). These are starting values, checked once the simulator produces silent drivers.
+- **Shard restart:** active Trips are loaded from Postgres. Open offers are withdrawn, and open Ride Requests are cancelled, because their riders' connections were lost.
+- **Invariant checker:** runs after each run. It checks Postgres (no driver with two active Trips, no Ride Request with two Trips) and cross-checks what simulated clients were told, which catches a TripAssigned sent without a commit.
+
 ## Data model
 
-Conceptual only; schemas are set in PLAN or CODE.
+The schema is in `migrations/`. Partial unique indexes on `trips` enforce the invariant: one active Trip per driver, and one Trip per Ride Request unless cancelled.
 
 | Entity | Lives in | Notes |
 |---|---|---|
@@ -134,7 +144,9 @@ Conceptual only; schemas are set in PLAN or CODE.
 
 ## Experiments
 
-Each run records its seed, load, Staleness budget and VM limits. A result counts only if the assignment invariant held.
+Each run records its seed, load, Staleness budget and VM limits. A result counts only if the assignment invariant held: the simulator runs the invariant checker against the Shard's Postgres after each run, and records `invariant_checked` and `invariant_passed`.
+
+- **Experiment database:** `deploy/baseline.yml` runs Postgres with trust auth and no published port, so no secret is needed. Its data is wiped before and after each run.
 
 - **Run mode:** all runs use the wall clock on the normal runtime. Demand and driver decisions are seeded, so policies see the same inputs. Timing still varies, so runs are compared statistically over repeats, and a failing seed may not fail again.
 - **Staleness budget:** p99 under 5s with 4s pings. If load is too much, shift to p99 under 8s with 4s pings. Each result states which applied.
@@ -149,10 +161,11 @@ Each run records its seed, load, Staleness budget and VM limits. A result counts
 
 ## Open items
 
-- Docker VM: 14 CPUs and about 7.7 GiB of memory as currently configured, on a 24 GiB machine. Enough for a 30-minute 100k run without Postgres, at about 3.3 GiB peak, but memory keeps growing during runs (`experiments/load_ramp.md`). Revisit once Postgres is added.
-- Values: silent-driver, offer and Reservation timeouts; Batch Window (must fit 2s p99); number of Shards.
+- Docker VM: 14 CPUs and about 7.7 GiB of memory as currently configured, on a 24 GiB machine. Enough for a 30-minute 100k run with Postgres, at about 3.5 GiB peak. Shard memory grows with Trips in progress, about 9 KB each, and should level off once completions match new Trips; a run longer than 30 minutes would confirm it (`experiments/assignment.md`).
+- Values: offer and Reservation timeouts; Batch Window (must fit 2s p99); number of Shards. Silent-driver timeouts have starting values (see Assignment on one Shard); Phase 3 runs at 5% assumed silence didn't press them, so they stay until a harsher silence model does.
 - Supply threshold for widening, and how to stop it flapping.
 - Quote validity window and controller tuning.
+- First-offer max of about 3.8 s with Postgres, against p99 of 3–4 ms; cause unknown, to explain before the Phase 8 strict test (`experiments/assignment.md`).
 - Hot-Shard behaviour under a 50x spike.
 - Reusing `payment-ledger` for the final phase; reading it needs explicit permission.
 
@@ -167,6 +180,10 @@ Latency numbers need real time, but policy comparisons need reproducible runs, s
 ### Accept owner is a two-step Reservation, not a global store
 
 A global assignment store would be the easiest way to keep assignments correct, but it would be a bottleneck and would undercut geo-partitioning. Reservations keep ownership in the Shards, at the cost of a crash window that expiry and peer checks must close.
+
+### Accept commits outside the dispatcher task
+
+Waiting for each commit inside the dispatcher would be simpler, but it would block all matching for each commit and serialize Accepts in memory, so the Postgres constraints would rarely be what stops a Double Assignment. Running the transaction in a separate task lets Accepts really race in Postgres, at the cost of a pending state and handling for lost results.
 
 ### Seeded inputs instead of a simulated clock
 

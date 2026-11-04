@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO trips (id, ride_request_id, driver_id, offer_id, status) VALUES ($1, $2, $3, $4, 'assigned')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "50d11c41ed3688f1a5725f0bc063759f39f1c19a8a39694ee071eb2068d642b1"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO ride_requests (id, quote_id, pickup_lat, pickup_lng, status)\n             VALUES ($1, $2, $3, $4, 'open') ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Float8",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a3dc1e2981e955916f846f74b2c98b3773df7aec7aa78478016470fd24ed51d"
+}

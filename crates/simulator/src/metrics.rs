@@ -122,6 +122,8 @@ pub struct RunInfo<'a> {
     pub drivers_planned: usize,
     pub trips_planned: usize,
     pub invariant_checked: bool,
+    pub invariant_passed: bool,
+    pub invariant_violations: usize,
 }
 
 pub fn run_record(info: &RunInfo, summary: &Summary, counters: &[(&str, u64)], assumptions: &[(&str, f64)]) -> String {
@@ -143,6 +145,8 @@ pub fn run_record(info: &RunInfo, summary: &Summary, counters: &[(&str, u64)], a
     writeln!(out, "  \"drivers_planned\": {},", info.drivers_planned).unwrap();
     writeln!(out, "  \"trips_planned\": {},", info.trips_planned).unwrap();
     writeln!(out, "  \"invariant_checked\": {},", info.invariant_checked).unwrap();
+    writeln!(out, "  \"invariant_passed\": {},", info.invariant_passed).unwrap();
+    writeln!(out, "  \"invariant_violations\": {},", info.invariant_violations).unwrap();
     out.push_str("  \"assumptions\": {");
     let joined: Vec<String> = assumptions.iter().map(|(name, value)| format!("\"{name}\": {value}")).collect();
     out.push_str(&joined.join(", "));

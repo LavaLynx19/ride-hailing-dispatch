@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE ride_requests SET status = 'assigned' WHERE id = $1 AND status = 'open'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0b8b9fe6686c4c492ce89b641dbf9e4802323b0e01048b48b2b01d750b73ef95"
+}

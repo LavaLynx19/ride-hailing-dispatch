@@ -1,7 +1,9 @@
 #!/bin/sh
 # usage: run_baseline.sh NAME SEED "START" "END" WARMUP_SECONDS [SUPPLY_SCALE] [DEMAND_SCALE]
 # Runs one window and writes experiments/runs/NAME.json, plus NAME.ping-log.txt with what the
-# ping log stored. Times are local NYC. The ping log is cleared before and after each run.
+# ping log stored, and NAME.stderr.txt with the simulator's log, including the invariant
+# checker's findings and failure reasons. NAME.shard-stats.txt holds the Shard's periodic
+# sizes. Times are local NYC. Postgres and the ping log are cleared before and after each run.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -14,7 +16,7 @@ data/.venv/bin/python data/export_demand.py \
     --demand data/raw/demand_2026-09.parquet --start "$start" --end "$end" --output "$demand"
 epoch=$(python3 -c "import calendar,sys,time; print(calendar.timegm(time.strptime(sys.argv[1], '%Y-%m-%d %H:%M:%S')))" "$start")
 duration=$(python3 -c "import calendar,sys,time; f=lambda s: calendar.timegm(time.strptime(s, '%Y-%m-%d %H:%M:%S')); print(f(sys.argv[2]) - f(sys.argv[1]))" "$start" "$end")
-commit=$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- crates proto deploy || echo -dirty)
+commit=$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- crates proto deploy migrations || echo -dirty)
 cpus=$(docker info --format '{{.NCPU}}')
 memory=$(docker info --format '{{.MemTotal}}' | awk '{printf "%.1f", $1 / 1073741824}')
 
@@ -29,10 +31,12 @@ $compose run --rm -T simulator \
     --driver-url "$(ports 7001 7003 7005 7007)" --rider-url "$(ports 7002 7004 7006 7008)" \
     --seed "$seed" --start-epoch "$epoch" --duration-seconds "$duration" --warmup-seconds "$warmup" \
     --supply-scale "$supply_scale" --demand-scale "$demand_scale" \
-    > "experiments/runs/$name.json"
+    --database-url postgres://postgres@postgres/dispatch \
+    > "experiments/runs/$name.json" 2> "experiments/runs/$name.stderr.txt"
 {
     echo "bytes on disk: $($compose exec -T shard du -sb /ping-log | cut -f1)"
     echo "last drop report: $($compose logs --no-log-prefix shard | grep 'ping log dropped' | tail -1)"
     echo "errors: $($compose logs --no-log-prefix shard | grep -c 'ping log .* failed' || true)"
 } > "experiments/runs/$name.ping-log.txt"
+$compose logs --timestamps --no-log-prefix shard | grep ' stats:' > "experiments/runs/$name.shard-stats.txt" || true
 cat "experiments/runs/$name.json"
