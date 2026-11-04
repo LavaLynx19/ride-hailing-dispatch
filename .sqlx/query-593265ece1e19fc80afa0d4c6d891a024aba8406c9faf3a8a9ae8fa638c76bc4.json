@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, ride_request_id FROM trips WHERE offer_id = $1 AND status <> 'cancelled'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trips",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ride_request_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trips",
+            "name": "ride_request_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "593265ece1e19fc80afa0d4c6d891a024aba8406c9faf3a8a9ae8fa638c76bc4"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE offers SET status = 'withdrawn', closed_at = now()\n             WHERE id IN (SELECT id FROM offers\n                          WHERE status = 'open' AND (ride_request_id = $1 OR driver_id = $2)\n                          FOR UPDATE SKIP LOCKED)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e78c769eb571e22b04aa682caf6b1778de4fcb4ab8d155a622d1ea0f6b17a3f4"
+}

@@ -1,6 +1,8 @@
 //! Kills the real Shard process with pings on the way in, and checks what's on disk.
+//! Needs `DATABASE_URL`, since the Shard won't start without Postgres.
 
-use std::net::TcpListener as StdListener;
+mod common;
+
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -12,12 +14,11 @@ use shard::ping_log::read_all;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-fn free_port() -> u16 {
-    StdListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
+use common::{free_port, fresh_database_url};
 
-fn start_shard(dir: &Path, driver_port: u16) -> Child {
+fn start_shard(dir: &Path, driver_port: u16, database_url: &str) -> Child {
     Command::new(env!("CARGO_BIN_EXE_shard"))
+        .env("DATABASE_URL", database_url)
         .args([format!("127.0.0.1:{driver_port}"), format!("127.0.0.1:{}", free_port())])
         .arg(dir)
         .stderr(Stdio::null())
@@ -48,9 +49,10 @@ async fn send_pings(driver_port: u16, range: std::ops::Range<i64>) {
 async fn pings_older_than_the_sync_interval_survive_being_killed() {
     let dir = std::env::temp_dir().join(format!("ping-log-restart-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    let database_url = fresh_database_url("ping_log_restart").await;
 
     let port = free_port();
-    let mut shard = start_shard(&dir, port);
+    let mut shard = start_shard(&dir, port, &database_url);
     send_pings(port, 0..1000).await;
     // Allow one full sync interval, plus margin, then kill with a further batch in flight.
     tokio::time::sleep(Duration::from_millis(2500)).await;
@@ -63,7 +65,7 @@ async fn pings_older_than_the_sync_interval_survive_being_killed() {
     assert!(after_kill.iter().copied().eq(0..after_kill.len() as i64), "pings are lost or out of order");
 
     // A restart keeps the old pings and adds new ones after them.
-    let mut shard = start_shard(&dir, port);
+    let mut shard = start_shard(&dir, port, &database_url);
     send_pings(port, 2000..2100).await;
     tokio::time::sleep(Duration::from_millis(2500)).await;
     shard.kill().unwrap();

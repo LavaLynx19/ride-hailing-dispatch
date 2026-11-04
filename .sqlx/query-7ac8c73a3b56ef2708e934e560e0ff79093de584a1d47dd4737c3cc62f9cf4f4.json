@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.id AS \"trip!\" FROM trips t JOIN offers o ON o.id = t.offer_id\n           WHERE o.status <> 'accepted' OR o.driver_id <> t.driver_id OR o.ride_request_id <> t.ride_request_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "trip!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trips",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7ac8c73a3b56ef2708e934e560e0ff79093de584a1d47dd4737c3cc62f9cf4f4"
+}

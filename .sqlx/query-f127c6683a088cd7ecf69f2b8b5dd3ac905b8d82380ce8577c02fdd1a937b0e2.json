@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE offers SET status = 'accepted', closed_at = now()\n             WHERE id = $1 AND driver_id = $2 AND status = 'open' AND expires_at > now()\n             RETURNING ride_request_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ride_request_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "offers",
+            "name": "ride_request_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f127c6683a088cd7ecf69f2b8b5dd3ac905b8d82380ce8577c02fdd1a937b0e2"
+}

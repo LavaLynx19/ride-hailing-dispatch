@@ -17,6 +17,8 @@ use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
+use checker::{DriverDoubleBooked, DriverTold, Observations, RiderTold};
+
 use crate::driver::{Leg, respond_to_offer, trip_legs};
 use crate::metrics::{TripTimes, record_once};
 use crate::plan::{DriverPlan, Plan, TripPlan};
@@ -28,6 +30,23 @@ const PICKUP_SPEED_KM_PER_SECOND: f64 = 25.0 / 3600.0;
 const RECONNECT_SECONDS: f64 = 1.0;
 const RIDER_GIVES_UP_SECONDS: f64 = 4.0 * 3600.0;
 const SECONDS_PER_HOUR: f64 = 3600.0;
+/// Keeps silence decisions off the stream that drives offer responses.
+const SILENCE_STREAM_SALT: u64 = 0x5113_7ce0_0000_0000;
+const FAILURES_KEPT: usize = 50;
+
+/// Assumed, not measured: some drivers go quiet once in a run, keeping the socket open but
+/// sending no pings and answering no offers. Only idle drivers go quiet; mid-trip silence
+/// belongs to Reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Silence {
+    pub probability: f64,
+    pub min_seconds: f64,
+    pub max_seconds: f64,
+}
+
+impl Silence {
+    pub const NONE: Self = Self { probability: 0.0, min_seconds: 0.0, max_seconds: 0.0 };
+}
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
@@ -41,12 +60,18 @@ pub struct RunConfig {
     pub time_scale: f64,
     /// How far into its clock hour the run starts, because supply changes on the clock hour.
     pub seconds_into_first_hour: f64,
+    pub silence: Silence,
 }
 
 #[derive(Debug, Default)]
 pub struct Counters {
     pub driver_connections: AtomicU64,
-    pub connect_failures: AtomicU64,
+    pub driver_connect_failures: AtomicU64,
+    /// A driver connection that failed after connecting; the driver reconnects.
+    pub driver_session_errors: AtomicU64,
+    pub rider_connect_failures: AtomicU64,
+    pub rider_session_errors: AtomicU64,
+    pub silent_periods: AtomicU64,
     pub pings: AtomicU64,
     pub offers: AtomicU64,
     pub accepts: AtomicU64,
@@ -58,6 +83,10 @@ pub struct Counters {
     pub riders_finished: AtomicU64,
     /// When each offer arrived, and the Staleness of the location it was based on, in seconds.
     pub offer_staleness: Mutex<Vec<(f64, f64)>>,
+    /// The first few failures, with time and reason.
+    pub failures: Mutex<Vec<String>>,
+    /// What clients were told, for the invariant checker.
+    pub observations: Mutex<Observations>,
 }
 
 impl Counters {
@@ -68,6 +97,30 @@ impl Counters {
     fn add(counter: &AtomicU64) {
         counter.fetch_add(1, Ordering::Relaxed);
     }
+
+    fn failure(&self, counter: &AtomicU64, at_seconds: f64, kind: &str, reason: &str) {
+        Self::add(counter);
+        if let Ok(mut failures) = self.failures.lock()
+            && failures.len() < FAILURES_KEPT
+        {
+            failures.push(format!("{at_seconds:.1}s {kind}: {reason}"));
+        }
+    }
+
+    fn observe(&self, record: impl FnOnce(&mut Observations)) {
+        if let Ok(mut observations) = self.observations.lock() {
+            record(&mut observations);
+        }
+    }
+}
+
+enum Failure {
+    Connect(String),
+    Session(String),
+}
+
+fn session<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> Failure {
+    move |error| Failure::Session(format!("{context}: {error}"))
 }
 
 struct Run {
@@ -76,6 +129,7 @@ struct Run {
     times: Arc<[TripTimes]>,
     counters: Arc<Counters>,
     started: Instant,
+    duration_seconds: f64,
 }
 
 impl Run {
@@ -120,6 +174,7 @@ pub async fn run_plan(
         times: Arc::clone(&times),
         counters,
         started: Instant::now(),
+        duration_seconds,
     });
     let mut tasks = Vec::with_capacity(plan.drivers.len() + run.trips.len());
     for driver in plan.drivers {
@@ -158,16 +213,22 @@ pub fn online_spans(online: &[bool], seconds_into_first_hour: f64) -> Vec<(f64, 
 async fn run_driver(run: Arc<Run>, plan: DriverPlan) {
     let mut rng = Rng::stream(run.config.seed, plan.stream);
     let mut state = DriverState { at: plan.position, trip: None };
+    let silence = silence_window(&run, plan.stream);
     for (start, end) in online_spans(&plan.online, run.config.seconds_into_first_hour) {
         sleep_until(run.instant(start)).await;
         while run.sim_now() < end || state.trip.is_some() {
-            match driver_session(&run, &plan.id, plan.stream, &mut rng, &mut state, end).await {
+            let result = driver_session(&run, &plan.id, plan.stream, &mut rng, &mut state, end, silence).await;
+            let counters = &run.counters;
+            match result {
                 Ok(()) => break,
-                Err(()) => {
-                    Counters::add(&run.counters.connect_failures);
-                    tokio::time::sleep(Duration::from_secs_f64(RECONNECT_SECONDS / run.config.time_scale)).await;
+                Err(Failure::Connect(reason)) => {
+                    counters.failure(&counters.driver_connect_failures, run.sim_now(), "driver connect", &reason);
+                }
+                Err(Failure::Session(reason)) => {
+                    counters.failure(&counters.driver_session_errors, run.sim_now(), "driver session", &reason);
                 }
             }
+            tokio::time::sleep(Duration::from_secs_f64(RECONNECT_SECONDS / run.config.time_scale)).await;
         }
     }
 }
@@ -202,6 +263,17 @@ impl DriverState {
         }
         self.at
     }
+}
+
+/// When this driver goes quiet, if at all, as `(start, end)` in run seconds.
+fn silence_window(run: &Run, stream: u64) -> Option<(f64, f64)> {
+    let silence = run.config.silence;
+    let mut rng = Rng::stream(run.config.seed ^ SILENCE_STREAM_SALT, stream);
+    if rng.next_f64() >= silence.probability {
+        return None;
+    }
+    let start = rng.next_f64() * run.duration_seconds;
+    Some((start, start + silence.min_seconds + rng.next_f64() * (silence.max_seconds - silence.min_seconds)))
 }
 
 fn start_trip(run: &Run, state: &mut DriverState, trip_id: String, ride_request_id: &str, now: f64) -> bool {
@@ -242,8 +314,11 @@ async fn driver_session(
     rng: &mut Rng,
     state: &mut DriverState,
     end_seconds: f64,
-) -> Result<(), ()> {
-    let (socket, _) = connect_async_with_config(pick_url(&run.config.driver_urls, plan_stream), Some(socket_config()), false).await.map_err(|_| ())?;
+    silence: Option<(f64, f64)>,
+) -> Result<(), Failure> {
+    let (socket, _) = connect_async_with_config(pick_url(&run.config.driver_urls, plan_stream), Some(socket_config()), false)
+        .await
+        .map_err(|error| Failure::Connect(error.to_string()))?;
     Counters::add(&run.counters.driver_connections);
     let (mut sink, mut stream) = socket.split();
 
@@ -251,9 +326,16 @@ async fn driver_session(
     // Spread first pings across the interval, so a shift start isn't a burst.
     let mut next_ping = run.sim_now() + rng.next_f64() * ping_every;
     let mut pending: Vec<PendingResponse> = Vec::new();
+    let mut was_silent = false;
 
     loop {
         let now = run.sim_now();
+        let silent = state.trip.is_none() && silence.is_some_and(|(start, end)| (start..end).contains(&now));
+        if silent && !was_silent {
+            Counters::add(&run.counters.silent_periods);
+            pending.clear();
+        }
+        was_silent = silent;
         if now >= end_seconds && state.trip.is_none() {
             let _ = sink.close().await;
             return Ok(());
@@ -261,20 +343,23 @@ async fn driver_session(
         let next_event = state.trip.as_ref().and_then(|trip| trip.events.front()).map(|(at, _)| *at);
         let next_response = pending.iter().map(|response| response.at_seconds).reduce(f64::min);
         let mut wake = next_ping;
-        for candidate in [next_event, next_response, state.trip.is_none().then_some(end_seconds)] {
+        let silence_edge = silence.map(|(start, end)| if now < start { start } else { end }).filter(|edge| *edge > now);
+        for candidate in [next_event, next_response, state.trip.is_none().then_some(end_seconds), silence_edge] {
             wake = candidate.map_or(wake, |at| wake.min(at));
         }
 
         tokio::select! {
             () = sleep_until(run.instant(wake)) => {
                 let now = run.sim_now();
-                if now >= next_ping {
+                if now >= next_ping && silent {
+                    next_ping += ping_every;
+                } else if now >= next_ping {
                     let ping = driver_to_server::Message::LocationPing(LocationPing {
                         driver_id: id.to_owned(),
                         position: Some(lat_lng(state.position_at(now))),
                         reported_at_ms: wall_clock_ms(),
                     });
-                    send_driver(&mut sink, ping).await?;
+                    send_driver(&mut sink, ping).await.map_err(session("send ping"))?;
                     Counters::add(&run.counters.pings);
                     next_ping += ping_every;
                 }
@@ -292,7 +377,7 @@ async fn driver_session(
                         Counters::add(&run.counters.declines);
                         driver_to_server::Message::Decline(Decline { offer_id: response.offer_id })
                     };
-                    send_driver(&mut sink, message).await?;
+                    send_driver(&mut sink, message).await.map_err(session("send response"))?;
                 }
                 loop {
                     let due = state.trip.as_ref().and_then(|trip| trip.events.front()).filter(|(at, _)| *at <= now);
@@ -310,7 +395,7 @@ async fn driver_session(
                         occurred_at_ms: wall_clock_ms(),
                         buffered: false,
                     };
-                    send_driver(&mut sink, driver_to_server::Message::TripEvent(event)).await?;
+                    send_driver(&mut sink, driver_to_server::Message::TripEvent(event)).await.map_err(session("send trip event"))?;
                     if kind == TripEventKind::Completed {
                         state.trip = None;
                         Counters::add(&run.counters.trips_completed);
@@ -318,10 +403,16 @@ async fn driver_session(
                 }
             }
             frame = stream.next() => {
-                let Some(Ok(frame)) = frame else { return Err(()) };
+                let frame = match frame {
+                    Some(Ok(frame)) => frame,
+                    Some(Err(error)) => return Err(Failure::Session(format!("receive: {error}"))),
+                    None => return Err(Failure::Session("closed by server".into())),
+                };
                 let Message::Binary(bytes) = frame else { continue };
-                let decoded = ServerToDriver::decode(bytes).map_err(|_| ())?;
+                let decoded = ServerToDriver::decode(bytes).map_err(session("decode"))?;
                 match decoded.message {
+                    // A quiet driver doesn't see offers; the server must give up on them.
+                    Some(server_to_driver::Message::Offer(_)) if silent => {}
                     Some(server_to_driver::Message::Offer(offer)) => {
                         Counters::add(&run.counters.offers);
                         if let Ok(mut samples) = run.counters.offer_staleness.lock() {
@@ -337,12 +428,31 @@ async fn driver_session(
                         pending.retain(|response| response.offer_id != gone.offer_id);
                     }
                     Some(server_to_driver::Message::TripAssigned(assigned)) => {
+                        run.counters.observe(|observed| observed.drivers.push(DriverTold {
+                            driver: id.to_owned(),
+                            trip: assigned.trip_id.clone(),
+                            ride: assigned.ride_request_id.clone(),
+                        }));
+                        match &state.trip {
+                            // Told again, for example after a reconnect.
+                            Some(trip) if trip.id == assigned.trip_id => continue,
+                            Some(trip) => {
+                                let held_trip = trip.id.clone();
+                                run.counters.observe(|observed| observed.double_booked.push(DriverDoubleBooked {
+                                    driver: id.to_owned(),
+                                    held_trip,
+                                    new_trip: assigned.trip_id.clone(),
+                                }));
+                                continue;
+                            }
+                            None => {}
+                        }
                         Counters::add(&run.counters.trips_assigned);
                         pending.clear();
                         let now = run.sim_now();
                         state.position_at(now);
                         if !start_trip(run, state, assigned.trip_id, &assigned.ride_request_id, now) {
-                            return Err(());
+                            return Err(Failure::Session(format!("unknown Ride Request {}", assigned.ride_request_id)));
                         }
                     }
                     None => {}
@@ -364,52 +474,68 @@ fn answer_offer(run: &Run, rng: &mut Rng, state: &mut DriverState, offer: Offer)
     PendingResponse { at_seconds: now + response.after_seconds, offer_id: offer.offer_id, accept: response.accept }
 }
 
-async fn send_driver<S>(sink: &mut S, message: driver_to_server::Message) -> Result<(), ()>
+async fn send_driver<S>(sink: &mut S, message: driver_to_server::Message) -> Result<(), &'static str>
 where
     S: SinkExt<Message> + Unpin,
 {
     let frame = DriverToServer { message: Some(message) }.encode_to_vec();
-    sink.send(Message::Binary(frame.into())).await.map_err(|_| ())
+    sink.send(Message::Binary(frame.into())).await.map_err(|_| "connection closed")
 }
 
-async fn send_rider<S>(sink: &mut S, message: rider_to_server::Message) -> Result<(), ()>
+async fn send_rider<S>(sink: &mut S, message: rider_to_server::Message) -> Result<(), &'static str>
 where
     S: SinkExt<Message> + Unpin,
 {
     let frame = RiderToServer { message: Some(message) }.encode_to_vec();
-    sink.send(Message::Binary(frame.into())).await.map_err(|_| ())
+    sink.send(Message::Binary(frame.into())).await.map_err(|_| "connection closed")
 }
 
 async fn run_rider(run: Arc<Run>, index: usize) {
     let trip = run.trips[index];
     sleep_until(run.instant(trip.request_at_seconds)).await;
     let give_up = run.instant(trip.request_at_seconds + RIDER_GIVES_UP_SECONDS);
-    if rider_session(&run, index, trip.pickup, give_up).await.is_err() {
-        Counters::add(&run.counters.connect_failures);
+    let counters = &run.counters;
+    match rider_session(&run, index, trip.pickup, give_up).await {
+        Ok(()) => {}
+        Err(Failure::Connect(reason)) => {
+            counters.failure(&counters.rider_connect_failures, run.sim_now(), "rider connect", &reason);
+        }
+        Err(Failure::Session(reason)) => {
+            counters.failure(&counters.rider_session_errors, run.sim_now(), "rider session", &reason);
+        }
     }
 }
 
-async fn rider_session(run: &Run, index: usize, pickup: Position, give_up: Instant) -> Result<(), ()> {
-    let (socket, _) = connect_async_with_config(pick_url(&run.config.rider_urls, index as u64), Some(socket_config()), false).await.map_err(|_| ())?;
+async fn rider_session(run: &Run, index: usize, pickup: Position, give_up: Instant) -> Result<(), Failure> {
+    let (socket, _) = connect_async_with_config(pick_url(&run.config.rider_urls, index as u64), Some(socket_config()), false)
+        .await
+        .map_err(|error| Failure::Connect(error.to_string()))?;
     let (mut sink, mut stream) = socket.split();
     let id = ride_request_id(index);
     let quote = QuoteRequest { rider_id: format!("rider-{index}"), pickup: Some(lat_lng(pickup)) };
-    send_rider(&mut sink, rider_to_server::Message::QuoteRequest(quote)).await?;
+    send_rider(&mut sink, rider_to_server::Message::QuoteRequest(quote)).await.map_err(session("send quote request"))?;
 
     loop {
-        let frame = tokio::time::timeout_at(give_up, stream.next()).await.map_err(|_| ())?;
-        let Some(Ok(frame)) = frame else { return Err(()) };
+        let frame = tokio::time::timeout_at(give_up, stream.next()).await.map_err(session("gave up waiting"))?;
+        let frame = match frame {
+            Some(Ok(frame)) => frame,
+            Some(Err(error)) => return Err(Failure::Session(format!("receive: {error}"))),
+            None => return Err(Failure::Session("closed by server".into())),
+        };
         let Message::Binary(bytes) = frame else { continue };
-        match ServerToRider::decode(bytes).map_err(|_| ())?.message {
+        match ServerToRider::decode(bytes).map_err(session("decode"))?.message {
             Some(server_to_rider::Message::Quote(quote)) => {
                 let request = RideRequest {
                     ride_request_id: id.clone(),
                     quote_id: quote.quote_id,
                     pickup: Some(lat_lng(pickup)),
                 };
-                send_rider(&mut sink, rider_to_server::Message::RideRequest(request)).await?;
+                send_rider(&mut sink, rider_to_server::Message::RideRequest(request)).await.map_err(session("send ride request"))?;
                 Counters::add(&run.counters.ride_requests);
                 record_once(&run.times[index].requested, run.sim_now());
+            }
+            Some(server_to_rider::Message::TripStatus(status)) if status.status == "assigned" => {
+                run.counters.observe(|observed| observed.riders.push(RiderTold { ride: id.clone(), trip: status.trip_id }));
             }
             Some(server_to_rider::Message::TripStatus(status)) if status.status == "completed" => {
                 Counters::add(&run.counters.riders_finished);

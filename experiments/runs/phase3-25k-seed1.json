@@ -1,0 +1,33 @@
+{
+  "name": "phase3-25k-seed1",
+  "git_commit": "e98d16b-dirty",
+  "seed": 1,
+  "plan_hash": "4330963bce3e21b1",
+  "start_epoch": 1789407900,
+  "duration_seconds": 1800,
+  "warmup_seconds": 900,
+  "supply_scale": 0.981,
+  "demand_scale": 0.981,
+  "ping_seconds": 4,
+  "staleness_budget_p99_seconds": 5,
+  "vm_cpus": "14",
+  "vm_memory_gib": "7.7",
+  "simulator_cpus": "2",
+  "drivers_planned": 24985,
+  "trips_planned": 16912,
+  "invariant_checked": true,
+  "invariant_passed": true,
+  "invariant_violations": 0,
+  "assumptions": {"utilisation": 0.6, "accept_at_zero_km": 0.95, "accept_half_distance_km": 5, "response_min_seconds": 2, "response_max_seconds": 15, "pickup_speed_kmh": 25, "offer_timeout_seconds": 20, "silent_probability": 0.05, "silent_min_seconds": 10, "silent_max_seconds": 60},
+  "summary": {
+    "measured_requests": 8620,
+    "never_offered": 0,
+    "never_assigned": 76,
+    "never_reached_pickup": 228,
+    "request_to_first_offer_seconds": {"count": 8620, "p50": 0.002, "p95": 0.003, "p99": 0.004, "max": 3.730},
+    "request_to_assignment_seconds": {"count": 8544, "p50": 8.693, "p95": 14.738, "p99": 22.908, "max": 41.347},
+    "request_to_pickup_arrival_seconds": {"count": 8392, "p50": 14.814, "p95": 58.982, "p99": 104.764, "max": 249.825},
+    "staleness_at_offer_seconds": {"count": 9086, "p50": 2.009, "p95": 3.799, "p99": 3.964, "max": 4.000}
+  },
+  "counters": {"driver_connections": 24985, "driver_connect_failures": 0, "driver_session_errors": 0, "rider_connect_failures": 0, "rider_session_errors": 0, "silent_periods": 905, "pings": 10733018, "offers": 17795, "accepts": 16836, "declines": 870, "offers_gone": 4, "trips_assigned": 16836, "trips_completed": 6574, "ride_requests": 16912, "riders_finished": 6574}
+}

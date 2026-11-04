@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE offers SET status = $2, closed_at = now() WHERE id = ANY($1) AND status = 'open'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3687e34fa80c2f8c12fb8c707a58c32ac6b8c783ff911e5d312b6c9d5b4ee314"
+}

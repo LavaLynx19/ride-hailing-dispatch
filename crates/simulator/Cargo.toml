@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+checker = { version = "0.1.0", path = "../checker" }
 futures-util = "0.3.34"
 geo = { version = "0.1.0", path = "../geo" }
 prost = "0.14.4"

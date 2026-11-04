@@ -13,7 +13,7 @@ Requirements are in [README.md](README.md), design in [ARCHITECTURE.md](ARCHITEC
 - [x] 0.5 Create Cargo workspace and protobuf schemas (§P0)
 - [x] 0.5a Add protobuf code generation (§P0)
 - [x] 0.6 Add Dockerfile and compose setup (§P0)
-- [>] 0.7 Verify `sqlx` metadata in the container build (§P0) → defer until: Phase 3 adds the first query
+- [x] 0.7 Verify `sqlx` metadata in the container build (§P0; `.sqlx/`, offline image build)
 
 ### Phase 1: Simulator and baseline (§P1)
 - [x] 1.1 Prepare one month of demand from HVFHV records (§P1)
@@ -31,10 +31,10 @@ Requirements are in [README.md](README.md), design in [ARCHITECTURE.md](ARCHITEC
 - [x] 2.4 Run first load ramp and knee report (§P2; `experiments/load_ramp.md`)
 
 ### Phase 3: Assignment on one Shard (§P3)
-- [ ] 3.1 Build Postgres schema and Trip lifecycle
-- [ ] 3.2 Build atomic Accept with overlapping offers
-- [ ] 3.3 Build silent-driver handling for idle and offer stages
-- [ ] 3.4 Build invariant checker for run gating
+- [x] 3.1 Build Postgres schema and Trip lifecycle (§P3)
+- [x] 3.2 Build atomic Accept with overlapping offers (§P3)
+- [x] 3.3 Build silent-driver handling for idle and offer stages (§P3)
+- [x] 3.4 Build invariant checker for run gating (§P3; `experiments/assignment.md`)
 
 ### Phase 4: Matching policy (§P4)
 - [ ] 4.1 Build auction solver with Batch Window
