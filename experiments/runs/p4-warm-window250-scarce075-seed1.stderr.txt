@@ -1,0 +1,8 @@
+ Container ride-hailing-baseline-shard-1 Running 
+ Container ride-hailing-baseline-postgres-1 Running 
+ Container ride-hailing-baseline-postgres-1 Waiting 
+ Container ride-hailing-baseline-postgres-1 Healthy 
+ Container ride-hailing-baseline-simulator-run-a93b0fb445fb Creating 
+ Container ride-hailing-baseline-simulator-run-a93b0fb445fb Created 
+plan: 18742 drivers, 11444 trips, warm start 13787 Trips in progress (0 dropped)
+invariant checker: passed with 0 violations over 11360 Trips
