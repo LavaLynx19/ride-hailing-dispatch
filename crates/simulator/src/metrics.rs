@@ -33,6 +33,8 @@ pub struct Distribution {
     pub p95: f64,
     pub p99: f64,
     pub max: f64,
+    /// Total over all samples, such as the total wait across riders.
+    pub sum: f64,
 }
 
 /// Nearest-rank percentiles; `None` when there are no samples.
@@ -51,6 +53,7 @@ pub fn distribution(mut samples: Vec<f64>) -> Option<Distribution> {
         p95: rank(95.0),
         p99: rank(99.0),
         max: samples[samples.len() - 1],
+        sum: samples.iter().sum(),
     })
 }
 
@@ -63,6 +66,8 @@ pub struct Summary {
     pub request_to_first_offer: Option<Distribution>,
     pub request_to_assignment: Option<Distribution>,
     pub request_to_pickup_arrival: Option<Distribution>,
+    /// The pickup leg alone, which is what the matcher chooses.
+    pub assignment_to_pickup_arrival: Option<Distribution>,
     pub staleness_at_offer: Option<Distribution>,
 }
 
@@ -77,6 +82,10 @@ pub fn summarise(times: &[TripTimes], offer_staleness: &[(f64, f64)], warmup_sec
         measured.iter().filter_map(|(at, trip)| read(slot(trip)).map(|time| time - at)).collect()
     };
     let (offers, assigned, arrived) = (since(|t| &t.first_offer), since(|t| &t.assigned), since(|t| &t.arrived));
+    let pickup_legs: Vec<f64> = measured
+        .iter()
+        .filter_map(|(_, trip)| Some(read(&trip.arrived)? - read(&trip.assigned)?))
+        .collect();
     Summary {
         measured_requests: measured.len(),
         never_offered: measured.len() - offers.len(),
@@ -85,6 +94,7 @@ pub fn summarise(times: &[TripTimes], offer_staleness: &[(f64, f64)], warmup_sec
         request_to_first_offer: distribution(offers),
         request_to_assignment: distribution(assigned),
         request_to_pickup_arrival: distribution(arrived),
+        assignment_to_pickup_arrival: distribution(pickup_legs),
         staleness_at_offer: distribution(
             offer_staleness.iter().filter(|(at, _)| *at >= warmup_seconds).map(|(_, age)| *age).collect(),
         ),
@@ -96,8 +106,8 @@ fn json_distribution(out: &mut String, name: &str, value: &Option<Distribution>)
         None => writeln!(out, "    \"{name}\": null,").unwrap(),
         Some(d) => writeln!(
             out,
-            "    \"{name}\": {{\"count\": {}, \"p50\": {:.3}, \"p95\": {:.3}, \"p99\": {:.3}, \"max\": {:.3}}},",
-            d.count, d.p50, d.p95, d.p99, d.max
+            "    \"{name}\": {{\"count\": {}, \"p50\": {:.3}, \"p95\": {:.3}, \"p99\": {:.3}, \"max\": {:.3}, \"sum\": {:.1}}},",
+            d.count, d.p50, d.p95, d.p99, d.max, d.sum
         )
         .unwrap(),
     }
@@ -107,6 +117,8 @@ fn json_distribution(out: &mut String, name: &str, value: &Option<Distribution>)
 pub struct RunInfo<'a> {
     pub name: &'a str,
     pub git_commit: &'a str,
+    /// The Shard's matching policy, as the run script set it.
+    pub policy: &'a str,
     pub seed: u64,
     pub plan_hash: u64,
     pub start_epoch: i64,
@@ -121,6 +133,7 @@ pub struct RunInfo<'a> {
     pub simulator_cpus: &'a str,
     pub drivers_planned: usize,
     pub trips_planned: usize,
+    pub warm_start: crate::plan::WarmStart,
     pub invariant_checked: bool,
     pub invariant_passed: bool,
     pub invariant_violations: usize,
@@ -130,6 +143,7 @@ pub fn run_record(info: &RunInfo, summary: &Summary, counters: &[(&str, u64)], a
     let mut out = String::from("{\n");
     writeln!(out, "  \"name\": \"{}\",", info.name).unwrap();
     writeln!(out, "  \"git_commit\": \"{}\",", info.git_commit).unwrap();
+    writeln!(out, "  \"policy\": \"{}\",", info.policy).unwrap();
     writeln!(out, "  \"seed\": {},", info.seed).unwrap();
     writeln!(out, "  \"plan_hash\": \"{:016x}\",", info.plan_hash).unwrap();
     writeln!(out, "  \"start_epoch\": {},", info.start_epoch).unwrap();
@@ -144,6 +158,8 @@ pub fn run_record(info: &RunInfo, summary: &Summary, counters: &[(&str, u64)], a
     writeln!(out, "  \"simulator_cpus\": \"{}\",", info.simulator_cpus).unwrap();
     writeln!(out, "  \"drivers_planned\": {},", info.drivers_planned).unwrap();
     writeln!(out, "  \"trips_planned\": {},", info.trips_planned).unwrap();
+    writeln!(out, "  \"warm_start_trips\": {},", info.warm_start.trips).unwrap();
+    writeln!(out, "  \"warm_start_dropped\": {},", info.warm_start.dropped).unwrap();
     writeln!(out, "  \"invariant_checked\": {},", info.invariant_checked).unwrap();
     writeln!(out, "  \"invariant_passed\": {},", info.invariant_passed).unwrap();
     writeln!(out, "  \"invariant_violations\": {},", info.invariant_violations).unwrap();
@@ -158,6 +174,7 @@ pub fn run_record(info: &RunInfo, summary: &Summary, counters: &[(&str, u64)], a
     json_distribution(&mut out, "request_to_first_offer_seconds", &summary.request_to_first_offer);
     json_distribution(&mut out, "request_to_assignment_seconds", &summary.request_to_assignment);
     json_distribution(&mut out, "request_to_pickup_arrival_seconds", &summary.request_to_pickup_arrival);
+    json_distribution(&mut out, "assignment_to_pickup_arrival_seconds", &summary.assignment_to_pickup_arrival);
     json_distribution(&mut out, "staleness_at_offer_seconds", &summary.staleness_at_offer);
     if out.ends_with(",\n") {
         out.truncate(out.len() - 2);

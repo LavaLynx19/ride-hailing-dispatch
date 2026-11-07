@@ -1,6 +1,6 @@
 mod index;
 
-pub use h3o::Resolution;
+pub use h3o::{CellIndex, Resolution};
 pub use index::LocationIndex;
 
 const EARTH_RADIUS_KM: f64 = 6371.0;
@@ -14,6 +14,11 @@ pub struct Position {
 impl Position {
     pub fn is_finite(self) -> bool {
         self.lat.is_finite() && self.lng.is_finite()
+    }
+
+    /// The H3 Cell containing this position, or `None` for a position that isn't a real coordinate.
+    pub fn cell(self, resolution: Resolution) -> Option<CellIndex> {
+        h3o::LatLng::new(self.lat, self.lng).ok().map(|point| point.to_cell(resolution))
     }
 
     pub fn distance_km(self, other: Position) -> f64 {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use assignment::{AcceptOutcome, OfferKind, Store, TripStage};
+use assignment::{AcceptOutcome, Store, TripStage};
 
 use futures_util::{SinkExt, StreamExt};
 use geo::Position;
@@ -21,7 +21,7 @@ use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::dispatcher::{Dispatcher, Effect};
+use crate::dispatcher::{Dispatcher, Effect, Policy};
 use crate::ping_log::{PingLog, PingRecord};
 
 const TICK: Duration = Duration::from_millis(250);
@@ -77,12 +77,13 @@ fn rider_frame(message: server_to_rider::Message) -> Vec<u8> {
 /// port about 28,000 times at once, far short of the load target.
 ///
 /// Active Trips are recovered from Postgres before any connection is served.
-pub async fn serve(drivers: Vec<TcpListener>, riders: Vec<TcpListener>, ping_log: Option<PingLog>, store: Store) {
+pub async fn serve(drivers: Vec<TcpListener>, riders: Vec<TcpListener>, ping_log: Option<PingLog>, store: Store, policy: Policy) {
     let db = Arc::new(DbStats::default());
     let recovered = retry(&db, || store.recover()).await;
     eprintln!("recovered {} active Trips from Postgres", recovered.len());
     // Ids carry the start time, so they never repeat ids Postgres kept from before a restart.
-    let mut dispatcher = Dispatcher::new(&format!("{:x}-", unix_ms()));
+    eprintln!("policy: {policy}");
+    let mut dispatcher = Dispatcher::with_policy(&format!("{:x}-", unix_ms()), policy);
     for trip in recovered {
         dispatcher.recover_trip(trip.trip, trip.driver, trip.ride);
     }
@@ -94,7 +95,17 @@ pub async fn serve(drivers: Vec<TcpListener>, riders: Vec<TcpListener>, ping_log
         tokio::spawn(accept_riders(listener, events.clone()));
     }
     let postgres = Postgres { store, events, db };
-    run_dispatcher(dispatcher, inbox, ping_log, postgres).await;
+    run_dispatcher(dispatcher, policy, inbox, ping_log, postgres).await;
+}
+
+/// Waits for the next Batch Window, or forever when the policy doesn't batch.
+async fn next_batch(batch: &mut Option<tokio::time::Interval>) {
+    match batch {
+        Some(interval) => {
+            interval.tick().await;
+        }
+        None => std::future::pending().await,
+    }
 }
 
 struct Postgres {
@@ -105,6 +116,7 @@ struct Postgres {
 
 async fn run_dispatcher(
     mut dispatcher: Dispatcher,
+    policy: Policy,
     mut inbox: UnboundedReceiver<Event>,
     ping_log: Option<PingLog>,
     postgres: Postgres,
@@ -115,17 +127,20 @@ async fn run_dispatcher(
     let mut quotes = 0_u64;
     let mut tick = tokio::time::interval(TICK);
     let mut stats = tokio::time::interval(STATS_EVERY);
+    let mut batch = policy.batch_window().map(tokio::time::interval);
 
     loop {
         let effects = tokio::select! {
             _ = tick.tick() => dispatcher.tick(started.elapsed().as_secs_f64()),
+            _ = next_batch(&mut batch) => dispatcher.batch(started.elapsed().as_secs_f64()),
             _ = stats.tick() => {
                 let sizes = dispatcher.sizes();
                 eprintln!(
-                    "stats: driver links {}, rider links {}, drivers {}, idle {}, rides {}, waiting {}, offers {}, trips {}, postgres in flight {}, postgres failed attempts {}",
+                    "stats: driver links {}, rider links {}, drivers {}, idle {}, rides {}, waiting {}, offers {}, trips {}, postgres in flight {}, postgres failed attempts {}, batches {}, batch deadline hits {}, broadcast rounds {}, broadcast areas {}, area switches {}",
                     driver_links.len(), rider_links.len(), sizes.drivers, sizes.idle, sizes.rides, sizes.waiting,
                     sizes.offers, sizes.trips,
                     postgres.db.in_flight.load(Ordering::Relaxed), postgres.db.failed_attempts.load(Ordering::Relaxed),
+                    sizes.batches, sizes.batch_deadline_hits, sizes.broadcast_rounds, sizes.broadcast_areas, sizes.area_switches,
                 );
                 Vec::new()
             }
@@ -265,10 +280,10 @@ fn deliver(
                 retry(&db, || store.store_ride_request(&ride, &quote, pickup)).await;
                 Some(Event::RideStored { ride })
             }),
-            Effect::StoreOffer { offer, ride, driver, expires_at } => {
+            Effect::StoreOffer { offer, ride, driver, kind, expires_at } => {
                 let expires_at_ms = to_unix_ms(expires_at);
                 in_postgres(postgres, move |store, db| async move {
-                    retry(&db, || store.store_offer(&offer, &ride, &driver, OfferKind::Direct, expires_at_ms)).await;
+                    retry(&db, || store.store_offer(&offer, &ride, &driver, kind, expires_at_ms)).await;
                     Some(Event::OfferStored { offer })
                 });
             }

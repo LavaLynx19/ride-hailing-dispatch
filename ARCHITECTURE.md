@@ -123,6 +123,22 @@ Resolution 9 stays fast at every load measured. Resolution 10 is faster when den
 - **Shard restart:** active Trips are loaded from Postgres. Open offers are withdrawn, and open Ride Requests are cancelled, because their riders' connections were lost.
 - **Invariant checker:** runs after each run. It checks Postgres (no driver with two active Trips, no Ride Request with two Trips) and cross-checks what simulated clients were told, which catches a TripAssigned sent without a commit.
 
+### Matching policy on one Shard (decided 2026-11-04)
+
+The Shard runs one policy per run, set by `MATCHER`, `BATCH_WINDOW_MS` and `WIDENING`. Unset means the Phase 1 baseline, so earlier results stay comparable.
+
+- **Greedy (baseline):** each Ride Request is offered as soon as it is stored, to the nearest idle driver.
+- **Auction:** Ride Requests collect for one Batch Window. Each gets its 8 nearest idle drivers as candidates, with straight-line pickup distance as the cost. The solver matches as many rides as it can first, then minimises total pickup distance, to within 1 m per ride. It stops at 50 ms and offers what it has; the stats line counts these deadline hits. Rides left over wait for the next window.
+- **Widening:** a Ride Request goes to a Broadcast if its Direct Offer failed (declined, expired, withdrawn or refused), or if its area is short of supply. The Broadcast goes to the 5 nearest available drivers, and the first Accept wins.
+- **Supply signal:** idle drivers per unassigned Ride Request, over the pickup's resolution-7 Cell and its 6 neighbours (about 36 km²). An area starts broadcasting below 1.0 and stops above 1.5. It keeps each state for at least 60 s, so it can switch at most once a minute.
+- **Overlap:** a driver holding only Broadcasts can be in up to 3 at once, and gets no Direct Offer meanwhile. This is the first policy where drivers hold overlapping offers.
+- **Values:** 8 candidates, 50 ms, 5 drivers, 3 Broadcasts, and the 1.0 / 1.5 / 60 s thresholds are starting values, not yet measured. The Batch Window comes from the sweep below.
+- **Choosing the Batch Window:** sweep 250 ms, 500 ms and 1 s with the auction in the scarce scenario. Keep only windows with request-to-first-offer p99 of 1.5 s or less, leaving 0.5 s of the 2 s target for everything else. Of those, pick the one with the lowest mean pickup leg (assignment to pickup arrival). If two are within 2%, take the shorter window. **Chosen: 250 ms** (2026-11-07, warm 0.65×, seed 1). All three passed the filter (first-offer p99 0.25, 0.50 and 1.00 s), and mean pickup legs were 52.99, 52.93 and 52.91 s, within 0.2%. A longer window buys no shorter pickups at this load: about 2 Ride Requests arrive per 250 ms citywide, so rides rarely compete for the same drivers within one batch.
+- **Experiment scenarios:** abundant supply (supply scale equal to demand scale), and scarce supply (supply at 0.65× the demand scale). The warm 0.65× check (2026-11-07) qualified: idle drivers fell from about 2,600 to 1,750 of 16,247 without running out, at most 4 rides waited, and the mean pickup leg was 53 s, against 28 s at 0.75×. Runs are warm-started (see Experiments). The warm 0.75× check (2026-11-07) reached a steady state but wasn't scarce: about 4,000 of 18,742 drivers stayed idle (21%, against 20% estimated below) and at most 6 rides waited.
+- **Why cold runs couldn't be scarce (2026-11-04):** with every driver idle at the start and few Trips finishing within 20 minutes, drivers only get used up. At 0.5× idle drivers fell to about 2,600 but never ran out, batches held about one ride, and every window gave the same 26.7 s mean pickup leg. At 0.35× and 0.25× idle drivers ran out after about 16 and 11 minutes, then the queue grew without limit (880 and 3,476 waiting rides at the end, first-offer p99 76 s and 381 s). These runs passed the invariant checker and are kept, but don't count as scenario results.
+- **Why 0.65× for scarce:** the supply table assumes 60% utilisation, so at a supply-to-demand ratio r, trip time alone keeps 0.6 / r of drivers busy. At 0.5× that is 120%, so a warm run would be overloaded in steady state. At 0.75× it is 80%, which the check confirmed leaves too many idle. At 0.65× it is about 92%, plus pickup time, which should leave a small idle margin with local shortages.
+- **PLAN's verify example:** P4's example (r1: d1 1 min, d2 4 min; r2: d1 3 min, d2 15 min) can't come from straight-line distances, because no positions satisfy the triangle inequality for it. It is checked against the solver with a cost table instead. Dispatcher tests use a swap that positions can produce.
+
 ## Data model
 
 The schema is in `migrations/`. Partial unique indexes on `trips` enforce the invariant: one active Trip per driver, and one Trip per Ride Request unless cancelled.
@@ -149,6 +165,7 @@ Each run records its seed, load, Staleness budget and VM limits. A result counts
 - **Experiment database:** `deploy/baseline.yml` runs Postgres with trust auth and no published port, so no secret is needed. Its data is wiped before and after each run.
 
 - **Run mode:** all runs use the wall clock on the normal runtime. Demand and driver decisions are seeded, so policies see the same inputs. Timing still varies, so runs are compared statistically over repeats, and a failing seed may not fail again.
+- **Warm start (decided 2026-11-05, used from Phase 4):** the simulator also reads the 2 hours of demand before the run starts. Ride Requests from then that are still in progress at the start (request time plus recorded trip time, pickup not counted) are scaled and seeded like run demand. Each goes to an online driver: one in its pickup zone if any is left, otherwise any. That driver connects only when the trip ends, at its dropoff, or at the exit point for trips leaving the city. Trips beyond the online drivers are dropped and counted. The Shard just sees drivers arriving later: no Trip or Accept state is created, so the assignment invariant is untouched. The run record adds the counts of warm-started and dropped Trips, and the plan fingerprint covers them.
 - **Staleness budget:** p99 under 5s with 4s pings. If load is too much, shift to p99 under 8s with 4s pings. Each result states which applied.
 - **100k feasibility:** a strict 30-minute run with the 2s p99 met, no pings dropped and no invariant violations, generator included. Each attempt also reports the knee, the load where latency starts to bend.
 
@@ -162,10 +179,11 @@ Each run records its seed, load, Staleness budget and VM limits. A result counts
 ## Open items
 
 - Docker VM: 14 CPUs and about 7.7 GiB of memory as currently configured, on a 24 GiB machine. Enough for a 30-minute 100k run with Postgres, at about 3.5 GiB peak. Shard memory grows with Trips in progress, about 9 KB each, and should level off once completions match new Trips; a run longer than 30 minutes would confirm it (`experiments/assignment.md`).
-- Values: offer and Reservation timeouts; Batch Window (must fit 2s p99); number of Shards. Silent-driver timeouts have starting values (see Assignment on one Shard); Phase 3 runs at 5% assumed silence didn't press them, so they stay until a harsher silence model does.
-- Supply threshold for widening, and how to stop it flapping.
+- Values: offer and Reservation timeouts; number of Shards. Batch Window is set at 250 ms (see Matching policy on one Shard). Silent-driver timeouts have starting values (see Assignment on one Shard); Phase 3 runs at 5% assumed silence didn't press them, so they stay until a harsher silence model does.
+- Supply threshold for widening: the 1.0 / 1.5 / 60 s starting values showed no flapping in Phase 4 (48–71 switches per 20-minute run, at most 22 areas broadcasting), but switches are only counted in total, not per area. Widening made scarce waits about 1 s worse at that load, so tuning it waits for a denser-demand test such as the Phase 6 spikes (`experiments/matching.md`).
 - Quote validity window and controller tuning.
-- First-offer max of about 3.8 s with Postgres, against p99 of 3–4 ms; cause unknown, to explain before the Phase 8 strict test (`experiments/assignment.md`).
+- First-offer max of about 3.8 s with Postgres, against p99 of 3–4 ms; to explain before the Phase 8 strict test (`experiments/assignment.md`). Likely the startup surge of every idle driver connecting at once: 5–7.6 s in Phase 4 runs that start with about 11,000 idle drivers, and 0.68 s with about 4,900. A separate 20 s max appears on scarce seed 1 under every policy, so it most likely comes from that seed's demand. Neither is confirmed by timestamps yet (`experiments/matching.md`).
+- Connection failures: the ones seen so far are Docker DNS lookups failing at about 10 s, during the startup surge ("Temporary failure in name resolution"). This is a test-setup artefact; retries recover the drivers.
 - Hot-Shard behaviour under a 50x spike.
 - Reusing `payment-ledger` for the final phase; reading it needs explicit permission.
 

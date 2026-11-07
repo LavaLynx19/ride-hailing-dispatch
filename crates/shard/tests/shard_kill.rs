@@ -38,6 +38,7 @@ fn plan() -> Plan {
             stream: index,
             position: position(index as f64 * 0.1),
             online: vec![true],
+            busy_until_seconds: 0.0,
         })
         .collect();
     let trips = (0..400)
@@ -48,7 +49,7 @@ fn plan() -> Plan {
             trip_seconds: 30.0,
         })
         .collect();
-    Plan { drivers, trips }
+    Plan { drivers, trips, ..Plan::default() }
 }
 
 #[tokio::test(flavor = "multi_thread")]

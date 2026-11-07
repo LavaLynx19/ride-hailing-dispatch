@@ -1,0 +1,3 @@
+bytes on disk: 69571453
+last drop report: 
+errors: 0

@@ -4,6 +4,8 @@
 # ping log stored, and NAME.stderr.txt with the simulator's log, including the invariant
 # checker's findings and failure reasons. NAME.shard-stats.txt holds the Shard's periodic
 # sizes. Times are local NYC. Postgres and the ping log are cleared before and after each run.
+# The Shard's policy comes from MATCHER (greedy or auction), BATCH_WINDOW_MS and WIDENING (on or
+# off) in the environment; unset means the greedy baseline without widening.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -12,13 +14,18 @@ compose="docker compose -f deploy/baseline.yml"
 slug=$(echo "$start" | tr -d ' :-')
 demand="data/raw/window_$slug.csv"
 
+# Two hours before the start too, so Trips already in progress can warm-start drivers.
+lookback=$(python3 -c "import calendar,sys,time; print(time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(calendar.timegm(time.strptime(sys.argv[1], '%Y-%m-%d %H:%M:%S')) - 7200)))" "$start")
 data/.venv/bin/python data/export_demand.py \
-    --demand data/raw/demand_2026-09.parquet --start "$start" --end "$end" --output "$demand"
+    --demand data/raw/demand_2026-09.parquet --start "$lookback" --end "$end" --output "$demand"
 epoch=$(python3 -c "import calendar,sys,time; print(calendar.timegm(time.strptime(sys.argv[1], '%Y-%m-%d %H:%M:%S')))" "$start")
 duration=$(python3 -c "import calendar,sys,time; f=lambda s: calendar.timegm(time.strptime(s, '%Y-%m-%d %H:%M:%S')); print(f(sys.argv[2]) - f(sys.argv[1]))" "$start" "$end")
 commit=$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- crates proto deploy migrations || echo -dirty)
 cpus=$(docker info --format '{{.NCPU}}')
 memory=$(docker info --format '{{.MemTotal}}' | awk '{printf "%.1f", $1 / 1073741824}')
+
+export MATCHER=${MATCHER:-greedy} BATCH_WINDOW_MS=${BATCH_WINDOW_MS:-} WIDENING=${WIDENING:-off}
+policy="matcher=$MATCHER batch_window_ms=${BATCH_WINDOW_MS:-none} widening=$WIDENING"
 
 ports() { echo "ws://shard:$1,ws://shard:$2,ws://shard:$3,ws://shard:$4"; }
 
@@ -26,7 +33,7 @@ $compose down -v
 $compose up -d --force-recreate shard
 trap '$compose down -v' EXIT
 $compose run --rm -T simulator \
-    --name "$name" --git-commit "$commit" --vm-cpus "$cpus" --vm-memory-gib "$memory" --simulator-cpus 2 \
+    --name "$name" --git-commit "$commit" --policy "$policy" --vm-cpus "$cpus" --vm-memory-gib "$memory" --simulator-cpus 2 \
     --data-dir /data --demand "/data/$(basename "$demand")" \
     --driver-url "$(ports 7001 7003 7005 7007)" --rider-url "$(ports 7002 7004 7006 7008)" \
     --seed "$seed" --start-epoch "$epoch" --duration-seconds "$duration" --warmup-seconds "$warmup" \
@@ -38,5 +45,5 @@ $compose run --rm -T simulator \
     echo "last drop report: $($compose logs --no-log-prefix shard | grep 'ping log dropped' | tail -1)"
     echo "errors: $($compose logs --no-log-prefix shard | grep -c 'ping log .* failed' || true)"
 } > "experiments/runs/$name.ping-log.txt"
-$compose logs --timestamps --no-log-prefix shard | grep ' stats:' > "experiments/runs/$name.shard-stats.txt" || true
+$compose logs --timestamps --no-log-prefix shard | grep -E ' (stats|policy):' > "experiments/runs/$name.shard-stats.txt" || true
 cat "experiments/runs/$name.json"

@@ -87,16 +87,25 @@ impl LocationIndex {
     /// The nearest driver that `allowed` accepts. Equal distances go to the lowest id, so
     /// results don't depend on hash order.
     pub fn nearest(&self, from: Position, allowed: impl Fn(&str) -> bool) -> Option<&str> {
-        let center = cell_of(from, self.resolution)?;
-        let mut search = Search { index: self, from, allowed, best: None };
+        self.nearest_k(from, 1, allowed).first().map(|(id, _)| *id)
+    }
+
+    /// Up to `k` nearest drivers that `allowed` accepts, nearest first, with their distance in km.
+    /// Ties are broken by id, as in `nearest`.
+    pub fn nearest_k(&self, from: Position, k: usize, allowed: impl Fn(&str) -> bool) -> Vec<(&str, f64)> {
+        let Some(center) = cell_of(from, self.resolution) else { return Vec::new() };
+        if k == 0 {
+            return Vec::new();
+        }
+        let mut search = Search { index: self, from, allowed, k, best: Vec::with_capacity(k + 1) };
         let mut cells_left = self.cells.len();
         for ring in 0..=MAX_RINGS {
             // Rings from here out have at least `ring - 1` whole Cells between them and the search point.
-            let closer_is_impossible = search.best.is_some_and(|(_, distance)| {
-                ring > 0 && distance < f64::from(ring - 1) * self.km_per_ring
-            });
+            let closer_is_impossible = search.best.len() == k
+                && ring > 0
+                && search.best[k - 1].1 < f64::from(ring - 1) * self.km_per_ring;
             if cells_left == 0 || closer_is_impossible {
-                return search.best.map(|(id, _)| id);
+                return search.best;
             }
             let Some(cells) = center.grid_ring_fast(ring).collect::<Option<Vec<_>>>() else {
                 // Rings can't be walked across a pentagon, so fall back to a full scan.
@@ -109,10 +118,19 @@ impl LocationIndex {
                 }
             }
         }
+        search.best.clear();
         for drivers in self.cells.values() {
             search.consider(drivers);
         }
-        search.best.map(|(id, _)| id)
+        search.best
+    }
+
+    /// How many drivers are inside `area`, a Cell at this index's resolution or coarser.
+    pub fn count_in(&self, area: CellIndex) -> usize {
+        if area.resolution() > self.resolution {
+            return 0;
+        }
+        area.children(self.resolution).filter_map(|cell| self.cells.get(&cell)).map(HashSet::len).sum()
     }
 }
 
@@ -120,7 +138,9 @@ struct Search<'a, F> {
     index: &'a LocationIndex,
     from: Position,
     allowed: F,
-    best: Option<(&'a str, f64)>,
+    k: usize,
+    /// Sorted nearest first, at most `k` long.
+    best: Vec<(&'a str, f64)>,
 }
 
 impl<'a, F: Fn(&str) -> bool> Search<'a, F> {
@@ -130,11 +150,13 @@ impl<'a, F: Fn(&str) -> bool> Search<'a, F> {
                 continue;
             }
             let distance = self.index.entries[id].position.distance_km(self.from);
-            let closer = self.best.is_none_or(|(best_id, best_distance)| {
-                distance < best_distance || (distance == best_distance && id.as_str() < best_id)
-            });
-            if closer {
-                self.best = Some((id, distance));
+            let before = |(best_id, best_distance): &(&str, f64)| {
+                distance < *best_distance || (distance == *best_distance && id.as_str() < *best_id)
+            };
+            let at = self.best.iter().position(before).unwrap_or(self.best.len());
+            if at < self.k {
+                self.best.insert(at, (id, distance));
+                self.best.truncate(self.k);
             }
         }
     }
@@ -239,6 +261,51 @@ mod tests {
         for count in [1, 2, 5, 50] {
             assert_matches_brute_force(Resolution::Nine, count, 0.6, 2);
         }
+    }
+
+    #[test]
+    fn nearest_k_matches_brute_force() {
+        let mut sampler = Sampler(3);
+        let mut index = LocationIndex::new(Resolution::Nine);
+        let mut truth = HashMap::new();
+        for i in 0..3000 {
+            let (id, position) = (format!("d{i}"), sampler.position(0.4));
+            index.upsert(&id, position);
+            truth.insert(id, position);
+        }
+        for query in 0..300 {
+            let from = sampler.position(0.6);
+            let k = [1, 5, 8, 40][query % 4];
+            let allowed = |id: &str| !id.ends_with('7');
+            let mut expected: Vec<(&str, f64)> = truth
+                .iter()
+                .filter(|(id, _)| allowed(id))
+                .map(|(id, position)| (id.as_str(), position.distance_km(from)))
+                .collect();
+            expected.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(b.0)));
+            expected.truncate(k);
+            assert_eq!(index.nearest_k(from, k, allowed), expected, "query {query} with k {k}");
+        }
+    }
+
+    #[test]
+    fn nearest_k_returns_everyone_when_there_are_fewer_than_k() {
+        let mut index = LocationIndex::new(Resolution::Nine);
+        index.upsert("d1", NYC);
+        index.upsert("d2", Position { lat: 40.80, lng: -73.90 });
+        let found: Vec<&str> = index.nearest_k(NYC, 5, |_| true).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(found, ["d1", "d2"]);
+    }
+
+    #[test]
+    fn count_in_sums_drivers_inside_a_coarser_cell() {
+        let mut index = LocationIndex::new(Resolution::Nine);
+        index.upsert("d1", NYC);
+        index.upsert("d2", Position { lat: NYC.lat + 0.0005, lng: NYC.lng });
+        index.upsert("far", Position { lat: 41.5, lng: -73.0 });
+        let area = cell_of(NYC, Resolution::Seven).unwrap();
+        assert_eq!(index.count_in(area), 2);
+        assert_eq!(index.count_in(cell_of(NYC, Resolution::Ten).unwrap()), 0, "finer than the index counts nothing");
     }
 
     #[test]
