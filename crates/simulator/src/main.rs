@@ -10,7 +10,7 @@ use simulator::supply::SupplyTable;
 
 const USAGE: &str = "usage: simulator --data-dir DIR --demand FILE --driver-url URL --rider-url URL \
 --seed N --start-epoch SECONDS --duration-seconds N [--supply-scale X] [--demand-scale X] [--ping-seconds X] \
-[--warmup-seconds X] [--name S] [--git-commit S] [--vm-cpus S] [--vm-memory-gib S] [--simulator-cpus S] \
+[--warmup-seconds X] [--name S] [--git-commit S] [--policy S] [--vm-cpus S] [--vm-memory-gib S] [--simulator-cpus S] \
 [--silent-probability X] [--database-url URL]
 
 With --database-url, the invariant checker runs against the Shard's Postgres after the run.";
@@ -92,7 +92,11 @@ async fn main() -> Result<(), String> {
     let plan = build_plan(&scenario, &supply, &points, &exits, &demand);
     let (drivers_planned, trips_planned) = (plan.drivers.len(), plan.trips.len());
     let plan_hash = plan.fingerprint();
-    eprintln!("plan: {drivers_planned} drivers, {trips_planned} trips");
+    let warm_start = plan.warm_start;
+    eprintln!(
+        "plan: {drivers_planned} drivers, {trips_planned} trips, warm start {} Trips in progress ({} dropped)",
+        warm_start.trips, warm_start.dropped
+    );
 
     let ping_seconds = config.ping_interval_seconds;
     let counters = Arc::new(Counters::default());
@@ -128,6 +132,7 @@ async fn main() -> Result<(), String> {
     let info = RunInfo {
         name: text("name"),
         git_commit: text("git-commit"),
+        policy: text("policy"),
         seed: scenario.seed,
         plan_hash,
         start_epoch: scenario.start_epoch,
@@ -142,6 +147,7 @@ async fn main() -> Result<(), String> {
         simulator_cpus: text("simulator-cpus"),
         drivers_planned,
         trips_planned,
+        warm_start,
         invariant_checked: invariant.is_some(),
         invariant_passed: invariant.as_ref().is_some_and(checker::Report::passed),
         invariant_violations: invariant.as_ref().map_or(0, |report| report.violations),

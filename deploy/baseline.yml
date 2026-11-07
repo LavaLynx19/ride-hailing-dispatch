@@ -37,6 +37,9 @@ services:
     user: root
     environment:
       DATABASE_URL: postgres://postgres@postgres/dispatch
+      MATCHER: ${MATCHER:-greedy}
+      BATCH_WINDOW_MS: ${BATCH_WINDOW_MS:-}
+      WIDENING: ${WIDENING:-off}
     depends_on:
       postgres:
         condition: service_healthy

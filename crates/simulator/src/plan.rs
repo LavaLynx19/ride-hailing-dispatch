@@ -16,6 +16,7 @@ const EPOCH_HOUR_OF_WEEK: i64 = 72;
 const UNKNOWN_ZONES: [u16; 2] = [264, 265];
 const DRIVER_STREAM: u64 = 1 << 62;
 const RIDER_STREAM: u64 = 1 << 61;
+const WARM_STREAM: u64 = 1 << 50;
 
 pub fn hour_of_week(epoch_seconds: i64) -> u16 {
     ((epoch_seconds.div_euclid(SECONDS_PER_HOUR) + EPOCH_HOUR_OF_WEEK) % HOURS_PER_WEEK) as u16
@@ -117,6 +118,9 @@ pub struct DriverPlan {
     pub position: Position,
     /// One entry per hour of the run.
     pub online: Vec<bool>,
+    /// Seconds into the run that a Trip begun before it ends. Until then the driver stays
+    /// offline; zero for a driver who starts idle.
+    pub busy_until_seconds: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -131,6 +135,16 @@ pub struct TripPlan {
 pub struct Plan {
     pub drivers: Vec<DriverPlan>,
     pub trips: Vec<TripPlan>,
+    pub warm_start: WarmStart,
+}
+
+/// Trips from before the run that are still in progress when it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WarmStart {
+    /// Given to a driver, who comes online when the Trip ends.
+    pub trips: usize,
+    /// Left out because every driver online at the start already had one.
+    pub dropped: usize,
 }
 
 impl Plan {
@@ -144,8 +158,11 @@ impl Plan {
         for driver in &self.drivers {
             driver.id.hash(&mut hasher);
             driver.online.hash(&mut hasher);
+            driver.busy_until_seconds.to_bits().hash(&mut hasher);
             hash_position(&mut hasher, driver.position);
         }
+        self.warm_start.trips.hash(&mut hasher);
+        self.warm_start.dropped.hash(&mut hasher);
         for trip in &self.trips {
             trip.request_at_seconds.to_bits().hash(&mut hasher);
             trip.trip_seconds.to_bits().hash(&mut hasher);
@@ -171,6 +188,7 @@ fn run_hours(scenario: &Scenario) -> Vec<u16> {
     (first..=last).map(|hour| hour_of_week(hour * SECONDS_PER_HOUR)).collect()
 }
 
+/// Drivers in zone order; within a zone, those online the most hours come first.
 fn plan_drivers(scenario: &Scenario, supply: &SupplyTable, points: &ZonePoints) -> Vec<DriverPlan> {
     let hours = run_hours(scenario);
     // Sorted so that plan order, and so a seeded plan, doesn't depend on hash order.
@@ -199,6 +217,7 @@ fn plan_drivers(scenario: &Scenario, supply: &SupplyTable, points: &ZonePoints) 
                 stream,
                 position,
                 online: counts.iter().map(|count| index < *count).collect(),
+                busy_until_seconds: 0.0,
             });
         }
     }
@@ -238,6 +257,60 @@ fn plan_trips(
     trips
 }
 
+fn dropoff_point(rng: &mut Rng, row: &DemandRow, points: &ZonePoints, exits: &HashMap<u16, Position>) -> Option<Position> {
+    if UNKNOWN_ZONES.contains(&row.dropoff_zone) {
+        exits.get(&row.pickup_zone).copied()
+    } else {
+        points.sample(rng, row.dropoff_zone)
+    }
+}
+
+/// Gives each Trip still in progress at the start to a driver online at the start, from its
+/// pickup zone if one is free, otherwise from any zone. The driver comes online at the dropoff
+/// when the Trip ends. Demand rows from inside the run are ignored.
+fn warm_start(
+    scenario: &Scenario,
+    demand: &[DemandRow],
+    points: &ZonePoints,
+    exits: &HashMap<u16, Position>,
+    drivers: &mut [DriverPlan],
+) -> WarmStart {
+    let start = scenario.start_epoch;
+    // Free drivers per zone, popped from the back so lower indices go first.
+    let mut free: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
+    for (index, driver) in drivers.iter().enumerate().rev() {
+        if driver.online.first() == Some(&true) {
+            free.entry(zone_of(&driver.id)).or_default().push(index);
+        }
+    }
+    let mut result = WarmStart::default();
+    for (row_index, row) in demand.iter().enumerate() {
+        let ends = row.requested_at as f64 + row.trip_seconds;
+        if row.requested_at >= start || ends <= start as f64 {
+            continue;
+        }
+        let mut rng = Rng::stream(scenario.seed, RIDER_STREAM | WARM_STREAM | row_index as u64);
+        for _ in 0..round_randomly(&mut rng, scenario.demand_scale) {
+            let Some(dropoff) = dropoff_point(&mut rng, row, points, exits) else { continue };
+            let own_zone = free.get_mut(&row.pickup_zone).and_then(Vec::pop);
+            let Some(index) = own_zone.or_else(|| free.values_mut().find_map(Vec::pop)) else {
+                result.dropped += 1;
+                continue;
+            };
+            drivers[index].position = dropoff;
+            drivers[index].busy_until_seconds = ends - start as f64;
+            result.trips += 1;
+        }
+    }
+    result
+}
+
+/// The zone in an id made by `plan_drivers`.
+fn zone_of(id: &str) -> u16 {
+    id[1..].split('-').next().and_then(|zone| zone.parse().ok()).expect("driver ids are d{zone}-{index}")
+}
+
+/// `demand` may start before the run: rows from before it only feed the warm start.
 pub fn build_plan(
     scenario: &Scenario,
     supply: &SupplyTable,
@@ -245,10 +318,9 @@ pub fn build_plan(
     exits: &HashMap<u16, Position>,
     demand: &[DemandRow],
 ) -> Plan {
-    Plan {
-        drivers: plan_drivers(scenario, supply, points),
-        trips: plan_trips(scenario, demand, points, exits),
-    }
+    let mut drivers = plan_drivers(scenario, supply, points);
+    let warm_start = warm_start(scenario, demand, points, exits, &mut drivers);
+    Plan { drivers, trips: plan_trips(scenario, demand, points, exits), warm_start }
 }
 
 #[cfg(test)]
@@ -348,6 +420,54 @@ mod tests {
         let exit = Position { lat: 40.60, lng: -74.20 };
         let trips = plan(&scenario(5)).trips;
         assert_eq!(trips.iter().filter(|t| t.dropoff == Dropoff::Outside { exit }).count(), 500);
+    }
+
+    fn before_start(seconds_before: i64, pickup_zone: u16, dropoff_zone: u16, trip_seconds: f64) -> DemandRow {
+        DemandRow { requested_at: MONDAY_8AM - seconds_before, pickup_zone, dropoff_zone, trip_seconds }
+    }
+
+    #[test]
+    fn trips_in_progress_at_the_start_keep_drivers_offline_until_they_end() {
+        let (supply, points, exits, _) = fixtures();
+        let demand = vec![
+            before_start(300, 1, 2, 900.0),  // ends 600 s in, at a zone 2 point
+            before_start(900, 1, 265, 600.0), // ended before the start
+            before_start(100, 1, 265, 400.0), // ends 300 s in, at zone 1's exit
+        ];
+        let plan = build_plan(&scenario(5), &supply, &points, &exits, &demand);
+        assert_eq!(plan.warm_start, WarmStart { trips: 2, dropped: 0 });
+        assert!(plan.trips.is_empty(), "rows before the start aren't run demand");
+
+        let busy: Vec<_> = plan.drivers.iter().filter(|d| d.busy_until_seconds > 0.0).collect();
+        assert_eq!(busy.len(), 2);
+        assert!(busy.iter().all(|d| d.id.starts_with("d1-")), "pickup zone first");
+        let zone_two = Position { lat: 40.80, lng: -73.90 };
+        let exit = Position { lat: 40.60, lng: -74.20 };
+        let mut ends: Vec<_> = busy.iter().map(|d| (d.busy_until_seconds, d.position)).collect();
+        ends.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(ends, [(300.0, exit), (600.0, zone_two)]);
+    }
+
+    #[test]
+    fn warm_trips_spill_to_other_zones_then_drop() {
+        // Zone 1 has 10 drivers online at the start, zone 2 none or one.
+        let (supply, points, exits, _) = fixtures();
+        let demand: Vec<_> = (0..15).map(|_| before_start(60, 1, 2, 600.0)).collect();
+        let plan = build_plan(&scenario(5), &supply, &points, &exits, &demand);
+        let online = plan.drivers.iter().filter(|d| d.online[0]).count();
+        assert!(online < 15);
+        assert_eq!(plan.warm_start, WarmStart { trips: online, dropped: 15 - online });
+        assert!(plan.drivers.iter().filter(|d| d.online[0]).all(|d| d.busy_until_seconds == 600.0 - 60.0));
+        assert!(plan.drivers.iter().filter(|d| !d.online[0]).all(|d| d.busy_until_seconds == 0.0));
+    }
+
+    #[test]
+    fn warm_start_is_seeded_and_fingerprinted() {
+        let (supply, points, exits, _) = fixtures();
+        let demand = vec![before_start(60, 1, 2, 600.0)];
+        let warm = build_plan(&scenario(5), &supply, &points, &exits, &demand);
+        assert_eq!(warm, build_plan(&scenario(5), &supply, &points, &exits, &demand));
+        assert_ne!(warm.fingerprint(), build_plan(&scenario(5), &supply, &points, &exits, &[]).fingerprint());
     }
 
     #[test]

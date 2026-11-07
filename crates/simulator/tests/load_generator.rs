@@ -144,6 +144,7 @@ fn plan() -> Plan {
             // At the pickup, so acceptance is as likely as it gets.
             position: PICKUP,
             online: vec![true],
+            busy_until_seconds: 0.0,
         }],
         trips: vec![TripPlan {
             request_at_seconds: 30.0,
@@ -151,15 +152,12 @@ fn plan() -> Plan {
             dropoff: Dropoff::Inside(DROPOFF),
             trip_seconds: 120.0,
         }],
+        ..Plan::default()
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn one_trip_runs_from_request_to_completion() {
-    let server = Arc::new(Server::default());
-    let drivers = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let riders = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let config = RunConfig {
+fn config(drivers: &TcpListener, riders: &TcpListener) -> RunConfig {
+    RunConfig {
         driver_urls: vec![format!("ws://{}", drivers.local_addr().unwrap())],
         rider_urls: vec![format!("ws://{}", riders.local_addr().unwrap())],
         seed: 5,
@@ -167,7 +165,35 @@ async fn one_trip_runs_from_request_to_completion() {
         time_scale: TIME_SCALE,
         seconds_into_first_hour: 0.0,
         silence: Silence::NONE,
-    };
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_warm_started_driver_connects_when_their_trip_ends() {
+    let server = Arc::new(Server::default());
+    let drivers = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let riders = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = config(&drivers, &riders);
+    tokio::spawn(serve_driver(Arc::clone(&server), drivers));
+    tokio::spawn(serve_rider(Arc::clone(&server), riders));
+
+    let mut plan = plan();
+    plan.trips.clear();
+    plan.drivers[0].busy_until_seconds = 200.0;
+    let counters = Arc::new(Counters::default());
+    run_plan(config, plan, 300.0, Arc::clone(&counters)).await;
+
+    assert_eq!(Counters::get(&counters.driver_connections), 1);
+    let pings = server.observed.pings.load(Ordering::Relaxed);
+    assert!((20..=30).contains(&pings), "100s online at one ping per 4s: {pings}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_trip_runs_from_request_to_completion() {
+    let server = Arc::new(Server::default());
+    let drivers = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let riders = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = config(&drivers, &riders);
     tokio::spawn(serve_driver(Arc::clone(&server), drivers));
     tokio::spawn(serve_rider(Arc::clone(&server), riders));
 

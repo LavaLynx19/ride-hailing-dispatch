@@ -37,10 +37,10 @@ Requirements are in [README.md](README.md), design in [ARCHITECTURE.md](ARCHITEC
 - [x] 3.4 Build invariant checker for run gating (§P3; `experiments/assignment.md`)
 
 ### Phase 4: Matching policy (§P4)
-- [ ] 4.1 Build auction solver with Batch Window
-- [ ] 4.2 Build direct-then-Broadcast widening with supply signal
-- [ ] 4.3 Run greedy vs auction experiment
-- [ ] 4.4 Run Direct Offer vs widening experiment
+- [x] 4.1 Build auction solver with Batch Window
+- [x] 4.2 Build direct-then-Broadcast widening with supply signal
+- [x] 4.3 Run greedy vs auction experiment (`experiments/matching.md`)
+- [x] 4.4 Run Direct Offer vs widening experiment (`experiments/matching.md`)
 
 ### Phase 5: Geo-sharding (§P5)
 - [ ] 5.1 Build versioned Cell → Shard map

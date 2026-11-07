@@ -215,6 +215,11 @@ async fn run_driver(run: Arc<Run>, plan: DriverPlan) {
     let mut state = DriverState { at: plan.position, trip: None };
     let silence = silence_window(&run, plan.stream);
     for (start, end) in online_spans(&plan.online, run.config.seconds_into_first_hour) {
+        // A driver warm-started mid-Trip comes online when that Trip ends.
+        let start = start.max(plan.busy_until_seconds);
+        if start >= end {
+            continue;
+        }
         sleep_until(run.instant(start)).await;
         while run.sim_now() < end || state.trip.is_some() {
             let result = driver_session(&run, &plan.id, plan.stream, &mut rng, &mut state, end, silence).await;

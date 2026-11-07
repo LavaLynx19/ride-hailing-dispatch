@@ -1,19 +1,78 @@
-//! Baseline matcher: each Ride Request is offered, in arrival order, to the nearest
-//! idle driver, found through the location index. It's deliberately naive, so later policies have something to beat.
+//! Matching for one Shard, under a `Policy`:
+//! - Greedy, the baseline: each Ride Request is offered, in arrival order and as soon as it
+//!   arrives, to the nearest idle driver. It's deliberately naive, so later policies have something to beat.
+//! - Auction: waiting Ride Requests are collected for a Batch Window, then the auction solver
+//!   picks Direct Offers that match the most rides at the least total pickup distance.
+//! - Widening, with either matcher: a Ride Request whose Direct Offer failed, or whose area is
+//!   short of idle drivers, goes to a Broadcast instead, and the first Accept wins.
 //!
 //! The dispatcher holds no connections and does no I/O. It returns effects, and Postgres
 //! results come back to it as calls, so Accepts can race in Postgres while matching goes on.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
-use assignment::{AcceptOutcome, OfferClosed, TripStage};
-use geo::{LocationIndex, Position, Resolution};
+use assignment::{AcceptOutcome, OfferClosed, OfferKind, TripStage};
+use geo::{CellIndex, LocationIndex, Position, Resolution};
+
+use crate::auction;
 
 pub const OFFER_TIMEOUT_SECONDS: f64 = 20.0;
 /// Starting values with 4s pings: 3 missed pings for an idle driver, 2 for one holding an offer.
 pub const SILENT_IDLE_SECONDS: f64 = 12.0;
 pub const SILENT_OFFER_SECONDS: f64 = 8.0;
 const INDEX_RESOLUTION: Resolution = Resolution::Nine;
+
+/// Direct Offer candidates per Ride Request in the auction: its nearest idle drivers.
+const AUCTION_CANDIDATES: usize = 8;
+/// The answer is within this much total pickup distance per ride of the best.
+const AUCTION_EPSILON_KM: f64 = 0.001;
+/// The solver stops early past this, so a large batch can't hold up the dispatcher.
+const AUCTION_BUDGET: Duration = Duration::from_millis(50);
+pub const BROADCAST_SIZE: usize = 5;
+/// A driver holding only Broadcasts can hold this many at once.
+pub const MAX_BROADCASTS_PER_DRIVER: usize = 3;
+/// Supply is judged over a resolution-7 Cell and its neighbours, about 36 km².
+const SUPPLY_AREA: Resolution = Resolution::Seven;
+/// Idle drivers per unassigned Ride Request near the pickup.
+pub const SUPPLY_ENTER_BROADCAST_BELOW: f64 = 1.0;
+pub const SUPPLY_LEAVE_BROADCAST_ABOVE: f64 = 1.5;
+/// An area keeps its state at least this long, so widening can't flap.
+pub const SUPPLY_HOLD_SECONDS: f64 = 60.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Matcher {
+    Greedy,
+    Auction { window: Duration },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    pub matcher: Matcher,
+    pub widening: bool,
+}
+
+impl Policy {
+    pub const BASELINE: Policy = Policy { matcher: Matcher::Greedy, widening: false };
+
+    /// How often `batch` must be called, if at all.
+    pub fn batch_window(&self) -> Option<Duration> {
+        match self.matcher {
+            Matcher::Greedy => None,
+            Matcher::Auction { window } => Some(window),
+        }
+    }
+}
+
+impl std::fmt::Display for Policy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.matcher {
+            Matcher::Greedy => write!(f, "matcher greedy")?,
+            Matcher::Auction { window } => write!(f, "matcher auction, batch window {} ms", window.as_millis())?,
+        }
+        write!(f, ", widening {}", if self.widening { "on" } else { "off" })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
@@ -24,7 +83,7 @@ pub enum Effect {
     TripStatus { ride: String, trip: String, status: &'static str },
     // Written to Postgres. Storing a ride or an offer reports back when done.
     StoreRide { ride: String, quote: String, pickup: Position },
-    StoreOffer { offer: String, ride: String, driver: String, expires_at: f64 },
+    StoreOffer { offer: String, ride: String, driver: String, kind: OfferKind, expires_at: f64 },
     CloseOffers { offers: Vec<String>, reason: OfferClosed },
     /// Reports back with the outcome Postgres decided.
     CommitAccept { offer: String, driver: String, trip: String },
@@ -42,7 +101,16 @@ struct Driver {
 #[derive(Debug)]
 struct Ride {
     pickup: Position,
+    area: Option<CellIndex>,
     tried: HashSet<String>,
+    /// Set once a Direct Offer for it has failed; with widening on, it then goes to Broadcasts.
+    direct_failed: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Area {
+    broadcast: bool,
+    since: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +126,7 @@ enum Stage {
 struct OpenOffer {
     driver: String,
     ride: String,
+    kind: OfferKind,
     expires_at: f64,
     stage: Stage,
 }
@@ -70,14 +139,23 @@ pub struct Sizes {
     pub waiting: usize,
     pub offers: usize,
     pub trips: usize,
+    pub broadcast_areas: usize,
+    pub area_switches: u64,
+    pub batches: u64,
+    pub batch_deadline_hits: u64,
+    pub broadcast_rounds: u64,
 }
 
 #[derive(Debug)]
 pub struct Dispatcher {
+    policy: Policy,
     /// Keeps ids unique across Shard restarts, since Postgres keeps the old ones.
     id_prefix: String,
     drivers: HashMap<String, Driver>,
+    /// Drivers holding nothing: candidates for any offer.
     idle: LocationIndex,
+    /// Drivers holding only Broadcasts, below the limit: candidates for more Broadcasts.
+    broadcast_ready: LocationIndex,
     /// Unassigned Ride Requests; stored ones are also in `waiting` or on an offer.
     rides: HashMap<String, Ride>,
     waiting: VecDeque<String>,
@@ -86,7 +164,14 @@ pub struct Dispatcher {
     /// Kept alongside `offers` and `trips`, so checking whether someone is busy isn't a scan.
     offers_by_driver: HashMap<String, usize>,
     offers_by_ride: HashMap<String, usize>,
+    broadcasts_by_driver: HashMap<String, usize>,
     trips_by_driver: HashMap<String, usize>,
+    rides_by_area: HashMap<CellIndex, usize>,
+    areas: HashMap<CellIndex, Area>,
+    area_switches: u64,
+    batches: u64,
+    batch_deadline_hits: u64,
+    broadcast_rounds: u64,
     next_id: u64,
 }
 
@@ -98,17 +183,30 @@ impl Default for Dispatcher {
 
 impl Dispatcher {
     pub fn new(id_prefix: &str) -> Self {
+        Self::with_policy(id_prefix, Policy::BASELINE)
+    }
+
+    pub fn with_policy(id_prefix: &str, policy: Policy) -> Self {
         Self {
+            policy,
             id_prefix: id_prefix.to_owned(),
             drivers: HashMap::new(),
             idle: LocationIndex::new(INDEX_RESOLUTION),
+            broadcast_ready: LocationIndex::new(INDEX_RESOLUTION),
             rides: HashMap::new(),
             waiting: VecDeque::new(),
             offers: HashMap::new(),
             trips: HashMap::new(),
             offers_by_driver: HashMap::new(),
             offers_by_ride: HashMap::new(),
+            broadcasts_by_driver: HashMap::new(),
             trips_by_driver: HashMap::new(),
+            rides_by_area: HashMap::new(),
+            areas: HashMap::new(),
+            area_switches: 0,
+            batches: 0,
+            batch_deadline_hits: 0,
+            broadcast_rounds: 0,
             next_id: 0,
         }
     }
@@ -132,6 +230,9 @@ impl Dispatcher {
     fn add_offer(&mut self, id: String, offer: OpenOffer) {
         *self.offers_by_driver.entry(offer.driver.clone()).or_default() += 1;
         *self.offers_by_ride.entry(offer.ride.clone()).or_default() += 1;
+        if offer.kind == OfferKind::Broadcast {
+            *self.broadcasts_by_driver.entry(offer.driver.clone()).or_default() += 1;
+        }
         self.offers.insert(id, offer);
     }
 
@@ -139,7 +240,16 @@ impl Dispatcher {
         let offer = self.offers.remove(id)?;
         decrement(&mut self.offers_by_driver, &offer.driver);
         decrement(&mut self.offers_by_ride, &offer.ride);
+        if offer.kind == OfferKind::Broadcast {
+            decrement(&mut self.broadcasts_by_driver, &offer.driver);
+        }
         Some(offer)
+    }
+
+    fn remove_ride(&mut self, ride: &str) {
+        if let Some(area) = self.rides.remove(ride).and_then(|ride| ride.area) {
+            decrement(&mut self.rides_by_area, &area);
+        }
     }
 
     pub fn sizes(&self) -> Sizes {
@@ -150,6 +260,11 @@ impl Dispatcher {
             waiting: self.waiting.len(),
             offers: self.offers.len(),
             trips: self.trips.len(),
+            broadcast_areas: self.areas.values().filter(|area| area.broadcast).count(),
+            area_switches: self.area_switches,
+            batches: self.batches,
+            batch_deadline_hits: self.batch_deadline_hits,
+            broadcast_rounds: self.broadcast_rounds,
         }
     }
 
@@ -170,9 +285,12 @@ impl Dispatcher {
         entry.last_ping = now;
         let came_back = !entry.online || entry.silent;
         if !came_back {
-            // Only idle drivers are in the index, and upserting one follows their move.
+            // Only available drivers are indexed, and upserting one follows their move.
             if self.idle.contains(driver) {
                 self.idle.upsert(driver, position);
+            }
+            if self.broadcast_ready.contains(driver) {
+                self.broadcast_ready.upsert(driver, position);
             }
             return Vec::new();
         }
@@ -188,7 +306,7 @@ impl Dispatcher {
                 }
             }
         }
-        self.make_idle(driver);
+        self.refresh(driver);
         effects.extend(self.dispatch(now));
         effects
     }
@@ -198,6 +316,7 @@ impl Dispatcher {
             entry.online = false;
         }
         self.idle.remove(driver);
+        self.broadcast_ready.remove(driver);
     }
 
     /// The ride is matched only once Postgres has stored it.
@@ -205,7 +324,11 @@ impl Dispatcher {
         if self.rides.contains_key(&ride) {
             return Vec::new();
         }
-        self.rides.insert(ride.clone(), Ride { pickup, tried: HashSet::new() });
+        let area = pickup.cell(SUPPLY_AREA);
+        if let Some(area) = area {
+            *self.rides_by_area.entry(area).or_default() += 1;
+        }
+        self.rides.insert(ride.clone(), Ride { pickup, area, tried: HashSet::new(), direct_failed: false });
         vec![Effect::StoreRide { ride, quote, pickup }]
     }
 
@@ -261,7 +384,7 @@ impl Dispatcher {
         let mut effects = Vec::new();
         match outcome {
             AcceptOutcome::Assigned { trip, ride } => {
-                self.rides.remove(&ride);
+                self.remove_ride(&ride);
                 self.add_trip(trip.clone(), offer.driver.clone(), ride.clone());
                 effects.push(Effect::TripAssigned { driver: offer.driver.clone(), trip: trip.clone(), ride: ride.clone() });
                 effects.push(Effect::TripStatus { ride: ride.clone(), trip, status: "assigned" });
@@ -282,7 +405,7 @@ impl Dispatcher {
                     if other.ride != ride {
                         self.waiting.push_front(other.ride);
                     }
-                    self.make_idle(&other.driver);
+                    self.refresh(&other.driver);
                 }
                 if !closed.is_empty() {
                     effects.push(Effect::CloseOffers { offers: closed, reason: OfferClosed::Withdrawn });
@@ -290,11 +413,8 @@ impl Dispatcher {
             }
             AcceptOutcome::Refused(_) => {
                 effects.push(Effect::OfferGone { driver: offer.driver.clone(), offer: offer_id.to_owned() });
-                if let Some(ride) = self.rides.get_mut(&offer.ride) {
-                    ride.tried.insert(offer.driver.clone());
-                    self.waiting.push_front(offer.ride);
-                }
-                self.make_idle(&offer.driver);
+                self.requeue(&offer);
+                self.refresh(&offer.driver);
             }
         }
         effects.extend(self.dispatch(now));
@@ -322,7 +442,7 @@ impl Dispatcher {
         let mut effects = vec![Effect::RecordTripEvent { trip: trip.to_owned(), driver: driver.to_owned(), stage }];
         if stage == TripStage::Completed {
             let (_, ride) = self.take_trip(trip).expect("checked above");
-            self.make_idle(driver);
+            self.refresh(driver);
             effects.push(Effect::TripStatus { ride, trip: trip.to_owned(), status: "completed" });
             effects.extend(self.dispatch(now));
         }
@@ -335,6 +455,7 @@ impl Dispatcher {
             if driver.online && !driver.silent && now - driver.last_ping > SILENT_IDLE_SECONDS {
                 driver.silent = true;
                 self.idle.remove(id);
+                self.broadcast_ready.remove(id);
             }
         }
         let mut expired = Vec::new();
@@ -369,44 +490,147 @@ impl Dispatcher {
     /// Returns the offer's ride to the front of the queue, and frees its driver.
     fn reopen(&mut self, offer_id: &str) -> Option<String> {
         let offer = self.take_offer(offer_id)?;
-        if let Some(ride) = self.rides.get_mut(&offer.ride) {
-            ride.tried.insert(offer.driver.clone());
-            self.waiting.push_front(offer.ride);
-        }
-        self.make_idle(&offer.driver);
+        self.requeue(&offer);
+        self.refresh(&offer.driver);
         Some(offer.driver)
     }
 
-    /// Adds the driver to the index if they are online, responsive and hold nothing.
-    fn make_idle(&mut self, driver: &str) {
-        let Some(entry) = self.drivers.get(driver).filter(|entry| entry.online && !entry.silent) else { return };
-        let busy = self.offers_by_driver.contains_key(driver) || self.trips_by_driver.contains_key(driver);
-        if !busy {
-            self.idle.upsert(driver, entry.position);
+    /// The offer's driver won't be asked again for now, and a failed Direct Offer widens the ride.
+    fn requeue(&mut self, offer: &OpenOffer) {
+        if let Some(ride) = self.rides.get_mut(&offer.ride) {
+            ride.tried.insert(offer.driver.clone());
+            if offer.kind == OfferKind::Direct {
+                ride.direct_failed = true;
+            }
+            self.waiting.push_front(offer.ride.clone());
         }
     }
 
-    fn nearest_idle(&self, ride: &Ride) -> Option<String> {
-        self.idle.nearest(ride.pickup, |id| !ride.tried.contains(id)).map(str::to_owned)
+    /// Puts the driver in the index that matches what they hold, or in neither.
+    fn refresh(&mut self, driver: &str) {
+        let available = self.drivers.get(driver).filter(|entry| entry.online && !entry.silent).map(|entry| entry.position);
+        let offers = self.offers_by_driver.get(driver).copied().unwrap_or(0);
+        let broadcasts = self.broadcasts_by_driver.get(driver).copied().unwrap_or(0);
+        let free = available.is_some() && !self.trips_by_driver.contains_key(driver);
+        let idle = free && offers == 0;
+        let ready = free && offers > 0 && offers == broadcasts && broadcasts < MAX_BROADCASTS_PER_DRIVER;
+        for (index, wanted) in [(&mut self.idle, idle), (&mut self.broadcast_ready, ready)] {
+            match available {
+                Some(position) if wanted => {
+                    index.upsert(driver, position);
+                }
+                _ => index.remove(driver),
+            }
+        }
     }
 
+    /// Matches at once under Greedy. Under Auction, rides wait for the next `batch`.
     fn dispatch(&mut self, now: f64) -> Vec<Effect> {
+        match self.policy.matcher {
+            Matcher::Greedy => self.match_waiting(now),
+            Matcher::Auction { .. } => Vec::new(),
+        }
+    }
+
+    /// Runs the auction over the rides collected since the last call. The server calls it
+    /// once per Batch Window.
+    pub fn batch(&mut self, now: f64) -> Vec<Effect> {
+        match self.policy.matcher {
+            Matcher::Greedy => Vec::new(),
+            Matcher::Auction { .. } => self.match_waiting(now),
+        }
+    }
+
+    fn match_waiting(&mut self, now: f64) -> Vec<Effect> {
         let mut effects = Vec::new();
         let mut still_waiting = VecDeque::new();
         let mut queued = HashSet::new();
+        let mut direct = Vec::new();
+        let mut judged = HashSet::new();
         while let Some(ride_id) = self.waiting.pop_front() {
-            // A ride can be queued twice when offers close together; assigned rides drop out.
+            // A ride can be queued twice when offers close together; assigned rides drop out,
+            // and so do rides still holding offers.
             if !self.rides.contains_key(&ride_id) || !queued.insert(ride_id.clone()) {
                 continue;
             }
             if self.offers_by_ride.contains_key(&ride_id) {
                 continue;
             }
+            if self.policy.widening && self.wants_broadcast(&ride_id, now, &mut judged) {
+                if !self.broadcast(&ride_id, now, &mut effects) {
+                    still_waiting.push_back(ride_id);
+                }
+            } else {
+                direct.push(ride_id);
+            }
+        }
+        match self.policy.matcher {
+            Matcher::Greedy => self.greedy(direct, now, &mut effects, &mut still_waiting),
+            Matcher::Auction { .. } => self.auction(direct, now, &mut effects, &mut still_waiting),
+        }
+        self.waiting = still_waiting;
+        effects
+    }
+
+    /// Updates the area's supply state at most once per pass, then reads it.
+    fn wants_broadcast(&mut self, ride_id: &str, now: f64, judged: &mut HashSet<CellIndex>) -> bool {
+        let ride = &self.rides[ride_id];
+        if ride.direct_failed {
+            return true;
+        }
+        let Some(area) = ride.area else { return false };
+        if judged.insert(area) {
+            let mut idle = 0;
+            let mut unassigned = 0;
+            for cell in area.grid_disk::<Vec<_>>(1) {
+                idle += self.idle.count_in(cell);
+                unassigned += self.rides_by_area.get(&cell).copied().unwrap_or(0);
+            }
+            // This ride is unassigned, so the ratio is defined.
+            let supply = idle as f64 / unassigned.max(1) as f64;
+            let state = self.areas.entry(area).or_insert(Area { broadcast: false, since: f64::NEG_INFINITY });
+            let held = now - state.since >= SUPPLY_HOLD_SECONDS;
+            let switch = held
+                && if state.broadcast { supply > SUPPLY_LEAVE_BROADCAST_ABOVE } else { supply < SUPPLY_ENTER_BROADCAST_BELOW };
+            if switch {
+                *state = Area { broadcast: !state.broadcast, since: now };
+                self.area_switches += 1;
+            }
+        }
+        self.areas.get(&area).is_some_and(|state| state.broadcast)
+    }
+
+    /// Offers the ride to its nearest available drivers at once. False if there were none.
+    fn broadcast(&mut self, ride_id: &str, now: f64, effects: &mut Vec<Effect>) -> bool {
+        let ride = &self.rides[ride_id];
+        let allowed = |driver: &str| !ride.tried.contains(driver);
+        let mut found = self.idle.nearest_k(ride.pickup, BROADCAST_SIZE, allowed);
+        found.extend(self.broadcast_ready.nearest_k(ride.pickup, BROADCAST_SIZE, allowed));
+        found.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(b.0)));
+        found.truncate(BROADCAST_SIZE);
+        let drivers: Vec<String> = found.into_iter().map(|(driver, _)| driver.to_owned()).collect();
+        if drivers.is_empty() {
+            // Every available driver has refused: let them be asked again next time.
+            if let Some(ride) = self.rides.get_mut(ride_id) {
+                ride.tried.clear();
+            }
+            return false;
+        }
+        self.broadcast_rounds += 1;
+        for driver in drivers {
+            effects.push(self.make_offer(ride_id, driver, OfferKind::Broadcast, now));
+        }
+        true
+    }
+
+    fn greedy(&mut self, rides: Vec<String>, now: f64, effects: &mut Vec<Effect>, still_waiting: &mut VecDeque<String>) {
+        for ride_id in rides {
             if self.idle.is_empty() {
                 still_waiting.push_back(ride_id);
                 continue;
             }
-            let Some(driver) = self.nearest_idle(&self.rides[&ride_id]) else {
+            let ride = &self.rides[&ride_id];
+            let Some(driver) = self.idle.nearest(ride.pickup, |id| !ride.tried.contains(id)).map(str::to_owned) else {
                 // Every idle driver has refused: let them be asked again next time.
                 if let Some(ride) = self.rides.get_mut(&ride_id) {
                     ride.tried.clear();
@@ -414,21 +638,74 @@ impl Dispatcher {
                 still_waiting.push_back(ride_id);
                 continue;
             };
-            self.idle.remove(&driver);
-            let offer = self.new_id('o');
-            let expires_at = now + OFFER_TIMEOUT_SECONDS;
-            self.add_offer(
-                offer.clone(),
-                OpenOffer { driver: driver.clone(), ride: ride_id.clone(), expires_at, stage: Stage::Storing },
-            );
-            effects.push(Effect::StoreOffer { offer, ride: ride_id, driver, expires_at });
+            effects.push(self.make_offer(&ride_id, driver, OfferKind::Direct, now));
         }
-        self.waiting = still_waiting;
-        effects
+    }
+
+    fn auction(&mut self, rides: Vec<String>, now: f64, effects: &mut Vec<Effect>, still_waiting: &mut VecDeque<String>) {
+        let mut drivers: Vec<String> = Vec::new();
+        let mut driver_index: HashMap<String, usize> = HashMap::new();
+        let mut bidders = Vec::new();
+        let mut candidates = Vec::new();
+        for ride_id in rides {
+            let ride = &self.rides[&ride_id];
+            let found = self.idle.nearest_k(ride.pickup, AUCTION_CANDIDATES, |id| !ride.tried.contains(id));
+            if found.is_empty() {
+                if !self.idle.is_empty() {
+                    // Every idle driver has refused: let them be asked again next time.
+                    if let Some(ride) = self.rides.get_mut(&ride_id) {
+                        ride.tried.clear();
+                    }
+                }
+                still_waiting.push_back(ride_id);
+                continue;
+            }
+            let list = found
+                .into_iter()
+                .map(|(driver, km)| {
+                    let next = drivers.len();
+                    let index = *driver_index.entry(driver.to_owned()).or_insert_with(|| {
+                        drivers.push(driver.to_owned());
+                        next
+                    });
+                    (index, km)
+                })
+                .collect();
+            candidates.push(list);
+            bidders.push(ride_id);
+        }
+        if bidders.is_empty() {
+            return;
+        }
+        self.batches += 1;
+        let solution = auction::solve(drivers.len(), &candidates, AUCTION_EPSILON_KM, Some(Instant::now() + AUCTION_BUDGET));
+        if !solution.complete {
+            self.batch_deadline_hits += 1;
+        }
+        for (ride_id, assigned) in bidders.into_iter().zip(solution.assigned) {
+            match assigned {
+                Some(index) => {
+                    let driver = drivers[index].clone();
+                    effects.push(self.make_offer(&ride_id, driver, OfferKind::Direct, now));
+                }
+                None => still_waiting.push_back(ride_id),
+            }
+        }
+    }
+
+    fn make_offer(&mut self, ride_id: &str, driver: String, kind: OfferKind, now: f64) -> Effect {
+        let offer = self.new_id('o');
+        let expires_at = now + OFFER_TIMEOUT_SECONDS;
+        self.add_offer(
+            offer.clone(),
+            OpenOffer { driver: driver.clone(), ride: ride_id.to_owned(), kind, expires_at, stage: Stage::Storing },
+        );
+        self.refresh(&driver);
+        Effect::StoreOffer { offer, ride: ride_id.to_owned(), driver, kind, expires_at }
     }
 }
 
-fn decrement(counts: &mut HashMap<String, usize>, key: &str) {
+fn decrement<K: std::hash::Hash + Eq + ?Sized, Q: std::hash::Hash + Eq + std::borrow::Borrow<K>>(counts: &mut HashMap<Q, usize>, key: &K) {
     if let Some(count) = counts.get_mut(key) {
         *count -= 1;
         if *count == 0 {
@@ -689,5 +966,142 @@ mod tests {
         let effects = ping(&mut dispatcher, "d1", D1, 0.0);
         assert_eq!(effects, vec![Effect::TripAssigned { driver: "d1".into(), trip: "t9".into(), ride: "r9".into() }]);
         assert!(request(&mut dispatcher, "r1", R1, 1.0).is_empty(), "a driver on a Trip gets no offers");
+    }
+
+    fn offers_of(effects: &[Effect]) -> Vec<(String, String, String)> {
+        effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Offer { driver, offer, ride, .. } => Some((driver.clone(), offer.clone(), ride.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn auction() -> Dispatcher {
+        Dispatcher::with_policy("", Policy { matcher: Matcher::Auction { window: Duration::from_millis(500) }, widening: false })
+    }
+
+    fn widening() -> Dispatcher {
+        Dispatcher::with_policy("", Policy { matcher: Matcher::Greedy, widening: true })
+    }
+
+    fn batch(dispatcher: &mut Dispatcher, now: f64) -> Vec<Effect> {
+        let effects = dispatcher.batch(now);
+        settle(dispatcher, effects, now)
+    }
+
+    /// Along one line, in km from r1: d2 at -2, r1 at 0, d1 at 1, r2 at 3. Greedy in arrival
+    /// order gives r1→d1 and r2→d2 (1 + 5 km); swapping gives 2 + 2 km.
+    fn km_north(km: f64) -> Position {
+        Position { lat: 40.700 + km * 0.009, lng: -74.0 }
+    }
+
+    fn pairs(effects: &[Effect]) -> Vec<(String, String)> {
+        let mut pairs: Vec<(String, String)> =
+            offers_of(effects).into_iter().map(|(driver, _, ride)| (ride, driver)).collect();
+        pairs.sort();
+        pairs
+    }
+
+    fn pair(ride: &str, driver: &str) -> (String, String) {
+        (ride.into(), driver.into())
+    }
+
+    #[test]
+    fn greedy_takes_the_nearest_in_arrival_order() {
+        let mut dispatcher = Dispatcher::default();
+        ping(&mut dispatcher, "d1", km_north(1.0), 0.0);
+        ping(&mut dispatcher, "d2", km_north(-2.0), 0.0);
+        let mut effects = request(&mut dispatcher, "r1", km_north(0.0), 0.0);
+        effects.extend(request(&mut dispatcher, "r2", km_north(3.0), 0.0));
+        assert_eq!(pairs(&effects), [pair("r1", "d1"), pair("r2", "d2")]);
+    }
+
+    #[test]
+    fn the_auction_waits_for_the_batch_and_swaps() {
+        let mut dispatcher = auction();
+        ping(&mut dispatcher, "d1", km_north(1.0), 0.0);
+        ping(&mut dispatcher, "d2", km_north(-2.0), 0.0);
+        assert!(request(&mut dispatcher, "r1", km_north(0.0), 0.0).is_empty(), "nothing before the batch");
+        assert!(request(&mut dispatcher, "r2", km_north(3.0), 0.1).is_empty());
+        assert_eq!(pairs(&batch(&mut dispatcher, 0.5)), [pair("r1", "d2"), pair("r2", "d1")]);
+        assert_eq!(dispatcher.sizes().batches, 1);
+    }
+
+    #[test]
+    fn an_auction_ride_left_over_waits_for_the_next_batch() {
+        let mut dispatcher = auction();
+        ping(&mut dispatcher, "d1", km_north(1.0), 0.0);
+        request(&mut dispatcher, "r1", km_north(0.0), 0.0);
+        request(&mut dispatcher, "r2", km_north(3.0), 0.0);
+        assert_eq!(pairs(&batch(&mut dispatcher, 0.5)), [pair("r1", "d1")], "the nearer ride wins the one driver");
+        ping(&mut dispatcher, "d2", km_north(4.0), 0.6);
+        assert_eq!(pairs(&batch(&mut dispatcher, 1.0)), [pair("r2", "d2")]);
+    }
+
+    #[test]
+    fn a_declined_direct_offer_widens_to_a_broadcast_and_the_first_accept_wins() {
+        let mut dispatcher = widening();
+        for i in 0..7 {
+            ping(&mut dispatcher, &format!("d{i}"), km_north(0.1 * f64::from(i)), 0.0);
+        }
+        let (first, offer, _) = offer_of(&request(&mut dispatcher, "r1", km_north(0.0), 0.0));
+        assert_eq!(first, "d0", "supply is fine, so a Direct Offer comes first");
+        let effects = dispatcher.decline("d0", &offer, 1.0);
+        let broadcast = offers_of(&settle(&mut dispatcher, effects, 1.0));
+        let drivers: Vec<&str> = broadcast.iter().map(|(driver, ..)| driver.as_str()).collect();
+        assert_eq!(drivers, ["d1", "d2", "d3", "d4", "d5"], "the next five nearest, not the one who declined");
+        let (winner, winning_offer, _) = broadcast[2].clone();
+        let (_, effects) = assign(&mut dispatcher, &winner, &winning_offer, "r1", 2.0);
+        let gone: Vec<&str> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::OfferGone { driver, .. } => Some(driver.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(gone.len(), 4, "the other Broadcast offers are withdrawn: {effects:?}");
+        assert!(!gone.contains(&winner.as_str()));
+    }
+
+    #[test]
+    fn low_supply_broadcasts_at_once_and_holds_before_switching_back() {
+        let mut dispatcher = widening();
+        ping(&mut dispatcher, "a", km_north(0.1), 0.0);
+        ping(&mut dispatcher, "b", km_north(0.2), 0.0);
+        // Two idle drivers for one ride: Direct.
+        let first = offers_of(&request(&mut dispatcher, "r1", km_north(0.0), 0.0));
+        assert_eq!(first.len(), 1);
+        // One idle driver for two rides: below 1.0, so this area now broadcasts.
+        let second = offers_of(&request(&mut dispatcher, "r2", km_north(0.0), 1.0));
+        assert_eq!(second.iter().map(|(driver, ..)| driver.as_str()).collect::<Vec<_>>(), ["b"]);
+        // b holds only a Broadcast, so it can be in another one: a driver-side overlap.
+        let third = offers_of(&request(&mut dispatcher, "r3", km_north(0.0), 2.0));
+        assert_eq!(third.iter().map(|(driver, ..)| driver.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(dispatcher.sizes().broadcast_areas, 1);
+        // Plenty of drivers arrive, but the area holds its state for a minute.
+        for i in 0..20 {
+            ping(&mut dispatcher, &format!("n{i}"), km_north(0.3), 10.0);
+        }
+        let early = offers_of(&request(&mut dispatcher, "r4", km_north(0.0), 30.0));
+        assert_eq!(early.len(), BROADCAST_SIZE, "still broadcasting inside the hold");
+        let late = offers_of(&request(&mut dispatcher, "r5", km_north(0.0), 1.0 + SUPPLY_HOLD_SECONDS));
+        assert_eq!(late.len(), 1, "back to a Direct Offer after the hold");
+        assert_eq!(dispatcher.sizes().area_switches, 2);
+    }
+
+    #[test]
+    fn a_driver_holds_at_most_three_broadcasts_and_no_direct_offers_meanwhile() {
+        let mut dispatcher = widening();
+        // A ride with no one around puts the area into Broadcast.
+        assert!(request(&mut dispatcher, "r1", km_north(0.0), 0.0).is_empty());
+        let mut held = offers_of(&ping(&mut dispatcher, "d", km_north(0.1), 0.0));
+        for ride in ["r2", "r3", "r4"] {
+            held.extend(offers_of(&request(&mut dispatcher, ride, km_north(0.0), 1.0)));
+        }
+        let rides: Vec<&str> = held.iter().map(|(_, _, ride)| ride.as_str()).collect();
+        assert_eq!(rides, ["r1", "r2", "r3"], "r4 waits: d is at the limit");
+        assert_eq!(dispatcher.sizes().idle, 0, "a driver holding Broadcasts isn't idle, so gets no Direct Offer");
     }
 }
