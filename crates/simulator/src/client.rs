@@ -81,6 +81,8 @@ pub struct Counters {
     pub trips_completed: AtomicU64,
     pub ride_requests: AtomicU64,
     pub riders_finished: AtomicU64,
+    /// Redirects followed to another Shard, by drivers and riders.
+    pub redirects: AtomicU64,
     /// When each offer arrived, and the Staleness of the location it was based on, in seconds.
     pub offer_staleness: Mutex<Vec<(f64, f64)>>,
     /// The first few failures, with time and reason.
@@ -117,6 +119,15 @@ impl Counters {
 enum Failure {
     Connect(String),
     Session(String),
+    /// Not a failure: another Shard serves this client now.
+    Redirected(Target),
+}
+
+/// Where a redirect sent a client: that Shard's addresses and the map version behind it.
+#[derive(Debug, Clone)]
+struct Target {
+    urls: Vec<String>,
+    map_version: u32,
 }
 
 fn session<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> Failure {
@@ -212,7 +223,7 @@ pub fn online_spans(online: &[bool], seconds_into_first_hour: f64) -> Vec<(f64, 
 
 async fn run_driver(run: Arc<Run>, plan: DriverPlan) {
     let mut rng = Rng::stream(run.config.seed, plan.stream);
-    let mut state = DriverState { at: plan.position, trip: None };
+    let mut state = DriverState { at: plan.position, trip: None, target: None };
     let silence = silence_window(&run, plan.stream);
     for (start, end) in online_spans(&plan.online, run.config.seconds_into_first_hour) {
         // A driver warm-started mid-Trip comes online when that Trip ends.
@@ -226,6 +237,11 @@ async fn run_driver(run: Arc<Run>, plan: DriverPlan) {
             let counters = &run.counters;
             match result {
                 Ok(()) => break,
+                Err(Failure::Redirected(target)) => {
+                    Counters::add(&counters.redirects);
+                    state.target = Some(target);
+                    continue;
+                }
                 Err(Failure::Connect(reason)) => {
                     counters.failure(&counters.driver_connect_failures, run.sim_now(), "driver connect", &reason);
                 }
@@ -241,6 +257,8 @@ async fn run_driver(run: Arc<Run>, plan: DriverPlan) {
 struct DriverState {
     at: Position,
     trip: Option<ActiveTrip>,
+    /// The Shard the last redirect named; the initial list until there is one.
+    target: Option<Target>,
 }
 
 struct ActiveTrip {
@@ -321,7 +339,9 @@ async fn driver_session(
     end_seconds: f64,
     silence: Option<(f64, f64)>,
 ) -> Result<(), Failure> {
-    let (socket, _) = connect_async_with_config(pick_url(&run.config.driver_urls, plan_stream), Some(socket_config()), false)
+    let urls = state.target.as_ref().map_or(&run.config.driver_urls, |target| &target.urls);
+    let map_version = state.target.as_ref().map_or(0, |target| target.map_version);
+    let (socket, _) = connect_async_with_config(pick_url(urls, plan_stream), Some(socket_config()), false)
         .await
         .map_err(|error| Failure::Connect(error.to_string()))?;
     Counters::add(&run.counters.driver_connections);
@@ -363,6 +383,7 @@ async fn driver_session(
                         driver_id: id.to_owned(),
                         position: Some(lat_lng(state.position_at(now))),
                         reported_at_ms: wall_clock_ms(),
+                        map_version,
                     });
                     send_driver(&mut sink, ping).await.map_err(session("send ping"))?;
                     Counters::add(&run.counters.pings);
@@ -428,6 +449,11 @@ async fn driver_session(
                         }
                         pending.push(answer_offer(run, rng, state, offer));
                     }
+                    Some(server_to_driver::Message::Redirect(redirect)) if !redirect.urls.is_empty() => {
+                        let _ = sink.close().await;
+                        return Err(Failure::Redirected(Target { urls: redirect.urls, map_version: redirect.map_version }));
+                    }
+                    Some(server_to_driver::Message::Redirect(_)) => {}
                     Some(server_to_driver::Message::OfferGone(gone)) => {
                         Counters::add(&run.counters.offers_gone);
                         pending.retain(|response| response.offer_id != gone.offer_id);
@@ -508,46 +534,73 @@ async fn run_rider(run: Arc<Run>, index: usize) {
         Err(Failure::Session(reason)) => {
             counters.failure(&counters.rider_session_errors, run.sim_now(), "rider session", &reason);
         }
+        Err(Failure::Redirected(_)) => unreachable!("rider sessions follow redirects themselves"),
     }
 }
 
 async fn rider_session(run: &Run, index: usize, pickup: Position, give_up: Instant) -> Result<(), Failure> {
-    let (socket, _) = connect_async_with_config(pick_url(&run.config.rider_urls, index as u64), Some(socket_config()), false)
-        .await
-        .map_err(|error| Failure::Connect(error.to_string()))?;
-    let (mut sink, mut stream) = socket.split();
     let id = ride_request_id(index);
-    let quote = QuoteRequest { rider_id: format!("rider-{index}"), pickup: Some(lat_lng(pickup)) };
-    send_rider(&mut sink, rider_to_server::Message::QuoteRequest(quote)).await.map_err(session("send quote request"))?;
-
+    let mut target: Option<Target> = None;
+    let mut quote_id: Option<String> = None;
     loop {
-        let frame = tokio::time::timeout_at(give_up, stream.next()).await.map_err(session("gave up waiting"))?;
-        let frame = match frame {
-            Some(Ok(frame)) => frame,
-            Some(Err(error)) => return Err(Failure::Session(format!("receive: {error}"))),
-            None => return Err(Failure::Session("closed by server".into())),
+        let urls = target.as_ref().map_or(&run.config.rider_urls, |target| &target.urls);
+        let map_version = target.as_ref().map_or(0, |target| target.map_version);
+        let (socket, _) = connect_async_with_config(pick_url(urls, index as u64), Some(socket_config()), false)
+            .await
+            .map_err(|error| Failure::Connect(error.to_string()))?;
+        let (mut sink, mut stream) = socket.split();
+        let ride_request = |quote: &str| RideRequest {
+            ride_request_id: id.clone(),
+            quote_id: quote.to_owned(),
+            pickup: Some(lat_lng(pickup)),
+            map_version,
         };
-        let Message::Binary(bytes) = frame else { continue };
-        match ServerToRider::decode(bytes).map_err(session("decode"))?.message {
-            Some(server_to_rider::Message::Quote(quote)) => {
-                let request = RideRequest {
-                    ride_request_id: id.clone(),
-                    quote_id: quote.quote_id,
-                    pickup: Some(lat_lng(pickup)),
-                };
-                send_rider(&mut sink, rider_to_server::Message::RideRequest(request)).await.map_err(session("send ride request"))?;
-                Counters::add(&run.counters.ride_requests);
-                record_once(&run.times[index].requested, run.sim_now());
+        match &quote_id {
+            // After a redirect: the Quote still stands, so ask the new Shard straight away.
+            Some(quote) => {
+                send_rider(&mut sink, rider_to_server::Message::RideRequest(ride_request(quote)))
+                    .await
+                    .map_err(session("send ride request"))?;
             }
-            Some(server_to_rider::Message::TripStatus(status)) if status.status == "assigned" => {
-                run.counters.observe(|observed| observed.riders.push(RiderTold { ride: id.clone(), trip: status.trip_id }));
+            None => {
+                let quote = QuoteRequest { rider_id: format!("rider-{index}"), pickup: Some(lat_lng(pickup)) };
+                send_rider(&mut sink, rider_to_server::Message::QuoteRequest(quote)).await.map_err(session("send quote request"))?;
             }
-            Some(server_to_rider::Message::TripStatus(status)) if status.status == "completed" => {
-                Counters::add(&run.counters.riders_finished);
-                let _ = sink.close().await;
-                return Ok(());
+        }
+
+        loop {
+            let frame = tokio::time::timeout_at(give_up, stream.next()).await.map_err(session("gave up waiting"))?;
+            let frame = match frame {
+                Some(Ok(frame)) => frame,
+                Some(Err(error)) => return Err(Failure::Session(format!("receive: {error}"))),
+                None => return Err(Failure::Session("closed by server".into())),
+            };
+            let Message::Binary(bytes) = frame else { continue };
+            match ServerToRider::decode(bytes).map_err(session("decode"))?.message {
+                Some(server_to_rider::Message::Quote(quote)) => {
+                    send_rider(&mut sink, rider_to_server::Message::RideRequest(ride_request(&quote.quote_id)))
+                        .await
+                        .map_err(session("send ride request"))?;
+                    quote_id = Some(quote.quote_id);
+                    Counters::add(&run.counters.ride_requests);
+                    record_once(&run.times[index].requested, run.sim_now());
+                }
+                Some(server_to_rider::Message::Redirect(redirect)) if !redirect.urls.is_empty() => {
+                    Counters::add(&run.counters.redirects);
+                    let _ = sink.close().await;
+                    target = Some(Target { urls: redirect.urls, map_version: redirect.map_version });
+                    break;
+                }
+                Some(server_to_rider::Message::TripStatus(status)) if status.status == "assigned" => {
+                    run.counters.observe(|observed| observed.riders.push(RiderTold { ride: id.clone(), trip: status.trip_id }));
+                }
+                Some(server_to_rider::Message::TripStatus(status)) if status.status == "completed" => {
+                    Counters::add(&run.counters.riders_finished);
+                    let _ = sink.close().await;
+                    return Ok(());
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 }

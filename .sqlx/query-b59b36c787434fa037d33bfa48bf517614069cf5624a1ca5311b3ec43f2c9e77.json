@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM trips WHERE driver_id = $1 AND status IN ('assigned', 'arrived', 'started'))\n                   OR EXISTS (SELECT 1 FROM reservations WHERE driver_id = $1 AND id <> $2 AND status IN ('reserved', 'confirmed'))\n               AS \"busy!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "busy!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b59b36c787434fa037d33bfa48bf517614069cf5624a1ca5311b3ec43f2c9e77"
+}

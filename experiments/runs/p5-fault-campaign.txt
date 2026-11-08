@@ -1,0 +1,180 @@
+== crash-after-reserve seed 1
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [after_reserve=0.3] partitions false seed 1: 17 injected crashes, 0 kills, 25 Trips, 25 across Shards, 0 Reservations still unresolved, 44 accepts
+Shard 0: reservations held [aborted 17, confirmed 2, released 23], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 17, confirmed 25]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.47s
+== crash-after-reserve seed 2
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [after_reserve=0.3] partitions false seed 2: 14 injected crashes, 0 kills, 33 Trips, 33 across Shards, 0 Reservations still unresolved, 49 accepts
+Shard 0: reservations held [aborted 14, confirmed 4, released 29], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 14, confirmed 33]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.54s
+== crash-after-reserve seed 3
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [after_reserve=0.3] partitions false seed 3: 17 injected crashes, 0 kills, 32 Trips, 32 across Shards, 0 Reservations still unresolved, 50 accepts
+Shard 0: reservations held [aborted 17, confirmed 3, released 29], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 17, confirmed 32]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.55s
+== crash-after-confirm seed 1
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [after_confirm=0.3] partitions false seed 1: 23 injected crashes, 0 kills, 52 Trips, 52 across Shards, 0 Reservations still unresolved, 56 accepts
+Shard 0: reservations held [aborted 4, released 52], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 4, confirmed 52]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.53s
+== crash-after-confirm seed 2
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [after_confirm=0.3] partitions false seed 2: 17 injected crashes, 0 kills, 53 Trips, 53 across Shards, 0 Reservations still unresolved, 54 accepts
+Shard 0: reservations held [aborted 1, released 53], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 1, confirmed 53]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.53s
+== crash-after-confirm seed 3
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [after_confirm=0.3] partitions false seed 3: 21 injected crashes, 0 kills, 56 Trips, 56 across Shards, 0 Reservations still unresolved, 59 accepts
+Shard 0: reservations held [aborted 2, released 56], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 2, confirmed 56]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.51s
+== crash-before-settle seed 1
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [before_settle=0.3] partitions false seed 1: 23 injected crashes, 0 kills, 75 Trips, 74 across Shards, 1 Reservations still unresolved, 79 accepts
+Shard 0: reservations held [confirmed 12, released 61, reserved 1], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 74]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.53s
+== crash-before-settle seed 2
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [before_settle=0.3] partitions false seed 2: 27 injected crashes, 0 kills, 58 Trips, 57 across Shards, 0 Reservations still unresolved, 59 accepts
+Shard 0: reservations held [confirmed 11, released 46], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 57]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.53s
+== crash-before-settle seed 3
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [before_settle=0.3] partitions false seed 3: 24 injected crashes, 0 kills, 64 Trips, 64 across Shards, 0 Reservations still unresolved, 65 accepts
+Shard 0: reservations held [confirmed 9, released 55], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 64]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.80s
+== crash-before-release seed 1
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [before_release=0.3] partitions false seed 1: 18 injected crashes, 0 kills, 40 Trips, 40 across Shards, 0 Reservations still unresolved, 42 accepts
+Shard 0: reservations held [aborted 2, confirmed 3, released 37], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 2, confirmed 40]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.56s
+== crash-before-release seed 2
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [before_release=0.3] partitions false seed 2: 7 injected crashes, 0 kills, 52 Trips, 52 across Shards, 0 Reservations still unresolved, 53 accepts
+Shard 0: reservations held [aborted 1, confirmed 2, released 50], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 1, confirmed 52]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.61s
+== crash-before-release seed 3
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [before_release=0.3] partitions false seed 3: 19 injected crashes, 0 kills, 42 Trips, 41 across Shards, 0 Reservations still unresolved, 44 accepts
+Shard 0: reservations held [aborted 2, confirmed 3, released 38], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 2, confirmed 41]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.53s
+== dropped-calls seed 1
+faults [drop_request=0.2,drop_reply=0.2,delay_ms=300] crashes [] partitions false seed 1: 0 injected crashes, 0 kills, 46 Trips, 45 across Shards, 0 Reservations still unresolved, 70 accepts
+Shard 0: reservations held [aborted 24, confirmed 6, released 39], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 24, confirmed 45]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.55s
+== dropped-calls seed 2
+faults [drop_request=0.2,drop_reply=0.2,delay_ms=300] crashes [] partitions false seed 2: 0 injected crashes, 0 kills, 43 Trips, 42 across Shards, 0 Reservations still unresolved, 64 accepts
+Shard 0: reservations held [aborted 21, confirmed 9, released 33], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 21, confirmed 42]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.55s
+== dropped-calls seed 3
+faults [drop_request=0.2,drop_reply=0.2,delay_ms=300] crashes [] partitions false seed 3: 0 injected crashes, 0 kills, 47 Trips, 47 across Shards, 0 Reservations still unresolved, 72 accepts
+Shard 0: reservations held [aborted 25, confirmed 9, released 38], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 25, confirmed 47]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.52s
+== late-calls seed 1
+faults [drop_request=0,drop_reply=0,delay_ms=4500] crashes [] partitions false seed 1: 0 injected crashes, 0 kills, 31 Trips, 31 across Shards, 1 Reservations still unresolved, 32 accepts
+Shard 0: reservations held [confirmed 6, released 25, reserved 1], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 31]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.54s
+== late-calls seed 2
+faults [drop_request=0,drop_reply=0,delay_ms=4500] crashes [] partitions false seed 2: 0 injected crashes, 0 kills, 32 Trips, 32 across Shards, 0 Reservations still unresolved, 32 accepts
+Shard 0: reservations held [confirmed 9, released 23], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 32]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.54s
+== late-calls seed 3
+faults [drop_request=0,drop_reply=0,delay_ms=4500] crashes [] partitions false seed 3: 0 injected crashes, 0 kills, 29 Trips, 29 across Shards, 0 Reservations still unresolved, 29 accepts
+Shard 0: reservations held [confirmed 7, released 22], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 29]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.81s
+== partitions seed 1
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [] partitions true seed 1: 0 injected crashes, 0 kills, 66 Trips, 66 across Shards, 0 Reservations still unresolved, 69 accepts
+Shard 0: reservations held [aborted 3, confirmed 12, released 54], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 3, confirmed 66]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.54s
+== partitions seed 2
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [] partitions true seed 2: 0 injected crashes, 0 kills, 65 Trips, 65 across Shards, 0 Reservations still unresolved, 66 accepts
+Shard 0: reservations held [aborted 1, confirmed 15, released 50], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 1, confirmed 65]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.54s
+== partitions seed 3
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [] partitions true seed 3: 0 injected crashes, 0 kills, 64 Trips, 64 across Shards, 0 Reservations still unresolved, 65 accepts
+Shard 0: reservations held [aborted 1, confirmed 10, released 54], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 1, confirmed 64]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.53s
+== kills seed 1
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [] partitions false seed 1: 0 injected crashes, 5 kills, 61 Trips, 61 across Shards, 0 Reservations still unresolved, 61 accepts
+Shard 0: reservations held [released 61], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 61]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.53s
+== kills seed 2
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [] partitions false seed 2: 0 injected crashes, 5 kills, 58 Trips, 57 across Shards, 0 Reservations still unresolved, 61 accepts
+Shard 0: reservations held [aborted 3, released 57], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 3, confirmed 57]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.52s
+== kills seed 3
+faults [drop_request=0,drop_reply=0,delay_ms=0] crashes [] partitions false seed 3: 0 injected crashes, 5 kills, 57 Trips, 57 across Shards, 0 Reservations still unresolved, 59 accepts
+Shard 0: reservations held [aborted 2, released 57], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 2, confirmed 57]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.54s
+== everything seed 1
+faults [drop_request=0.05,drop_reply=0.05,delay_ms=300] crashes [after_reserve=0.04,after_confirm=0.04,before_settle=0.04,before_release=0.04] partitions true seed 1: 4 injected crashes, 5 kills, 34 Trips, 34 across Shards, 0 Reservations still unresolved, 40 accepts
+Shard 0: reservations held [aborted 6, confirmed 4, released 30], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 6, confirmed 34]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.54s
+== everything seed 2
+faults [drop_request=0.05,drop_reply=0.05,delay_ms=300] crashes [after_reserve=0.04,after_confirm=0.04,before_settle=0.04,before_release=0.04] partitions true seed 2: 5 injected crashes, 5 kills, 35 Trips, 35 across Shards, 0 Reservations still unresolved, 42 accepts
+Shard 0: reservations held [aborted 7, confirmed 2, released 33], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 7, confirmed 35]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.54s
+== everything seed 3
+faults [drop_request=0.05,drop_reply=0.05,delay_ms=300] crashes [after_reserve=0.04,after_confirm=0.04,before_settle=0.04,before_release=0.04] partitions true seed 3: 4 injected crashes, 5 kills, 38 Trips, 37 across Shards, 0 Reservations still unresolved, 46 accepts
+Shard 0: reservations held [aborted 7, released 37], decided for peers []
+Shard 1: reservations held [], decided for peers [aborted 7, confirmed 37]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.80s
+== past-expiry seed 1
+faults [drop_request=0,drop_reply=0,delay_ms=9000] crashes [] partitions false seed 1: 0 injected crashes, 0 kills, 11 Trips, 11 across Shards, 2 Reservations still unresolved, 19 accepts
+Shard 0: reservations held [confirmed 3, expired 6, released 8, reserved 2], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 11, expired 6]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.55s
+== past-expiry seed 2
+faults [drop_request=0,drop_reply=0,delay_ms=9000] crashes [] partitions false seed 2: 0 injected crashes, 0 kills, 12 Trips, 12 across Shards, 0 Reservations still unresolved, 19 accepts
+Shard 0: reservations held [confirmed 4, expired 7, released 8], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 12, expired 7]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.52s
+== past-expiry seed 3
+faults [drop_request=0,drop_reply=0,delay_ms=9000] crashes [] partitions false seed 3: 0 injected crashes, 0 kills, 12 Trips, 12 across Shards, 0 Reservations still unresolved, 22 accepts
+Shard 0: reservations held [confirmed 3, expired 10, released 9], decided for peers []
+Shard 1: reservations held [], decided for peers [confirmed 12, expired 10]
+invariant: passed with 0 violations
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 33.53s

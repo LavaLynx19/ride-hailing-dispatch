@@ -18,6 +18,7 @@ mod tests {
                 driver_id: "driver-1".into(),
                 position: Some(LatLng { lat: 40.75, lng: -73.98 }),
                 reported_at_ms: 1_000,
+                map_version: 0,
             })),
         };
 

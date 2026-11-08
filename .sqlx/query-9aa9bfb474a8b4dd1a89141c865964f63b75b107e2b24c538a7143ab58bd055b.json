@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO shard_map_cells (version, cell, shard) SELECT $1, * FROM UNNEST($2::bigint[], $3::smallint[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8Array",
+        "Int2Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9aa9bfb474a8b4dd1a89141c865964f63b75b107e2b24c538a7143ab58bd055b"
+}

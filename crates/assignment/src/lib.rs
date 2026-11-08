@@ -9,6 +9,11 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 
 pub use sqlx::Error;
 
+mod reservation;
+mod shard_map;
+pub use reservation::{Held, HeldReservation, LeasedTrip, PeerDecision};
+pub use shard_map::MapSaved;
+
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 const ONE_ACTIVE_TRIP_PER_DRIVER: &str = "trips_one_active_per_driver";
@@ -173,6 +178,19 @@ impl Store {
     /// [`Store::accept_outcome`] before telling anyone.
     pub async fn accept(&self, offer: &str, driver: &str, trip: &str) -> Result<AcceptOutcome, Error> {
         let mut tx = self.pool.begin().await?;
+        // A driver held for a peer Shard's Ride Request can't take a Trip here meanwhile.
+        sqlx::query(reservation::LOCK_DRIVER).bind(driver).execute(&mut *tx).await?;
+        let reserved = sqlx::query_scalar!(
+            r#"SELECT EXISTS (SELECT 1 FROM reservations WHERE driver_id = $1 AND status IN ('reserved', 'confirmed')) AS "reserved!""#,
+            driver
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if reserved {
+            tx.rollback().await?;
+            self.close_offers(&[offer.to_owned()], OfferClosed::Withdrawn).await?;
+            return Ok(AcceptOutcome::Refused(Refusal::DriverBusy));
+        }
         let Some(ride) = sqlx::query_scalar!(
             "UPDATE offers SET status = 'accepted', closed_at = now()
              WHERE id = $1 AND driver_id = $2 AND status = 'open' AND expires_at > now()

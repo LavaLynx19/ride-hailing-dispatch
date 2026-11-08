@@ -1,4 +1,5 @@
 mod index;
+pub mod shard_map;
 
 pub use h3o::{CellIndex, Resolution};
 pub use index::LocationIndex;

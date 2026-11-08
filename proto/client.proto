@@ -11,6 +11,15 @@ message LocationPing {
   string driver_id = 1;
   LatLng position = 2;
   int64 reported_at_ms = 3;
+  // The map version of the redirect that sent this driver here; 0 if none.
+  uint32 map_version = 4;
+}
+
+// Connect to one of these instead: another Shard owns this location. The client sends
+// `map_version` back with its first message there.
+message Redirect {
+  repeated string urls = 1;
+  uint32 map_version = 2;
 }
 
 message Offer {
@@ -69,6 +78,7 @@ message ServerToDriver {
     Offer offer = 1;
     OfferGone offer_gone = 2;
     TripAssigned trip_assigned = 3;
+    Redirect redirect = 4;
   }
 }
 
@@ -87,6 +97,7 @@ message RideRequest {
   string ride_request_id = 1;
   string quote_id = 2;
   LatLng pickup = 3;
+  uint32 map_version = 4;
 }
 
 message OfferProgress {
@@ -112,5 +123,6 @@ message ServerToRider {
     Quote quote = 1;
     OfferProgress offer_progress = 2;
     TripStatus trip_status = 3;
+    Redirect redirect = 4;
   }
 }

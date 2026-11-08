@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE peer_reservations SET status = 'confirmed', trip_id = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f88c2bc0d590f1f47bc11c18e0a224de332e29bf139643f5af5443089bf5c6a8"
+}

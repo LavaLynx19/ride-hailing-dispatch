@@ -1,0 +1,8 @@
+ Container ride-hailing-sharded-postgres-0-1 Running 
+ Container ride-hailing-sharded-shard-0-1 Running 
+ Container ride-hailing-sharded-postgres-0-1 Waiting 
+ Container ride-hailing-sharded-postgres-0-1 Healthy 
+ Container ride-hailing-sharded-simulator-run-74bbafe39548 Creating 
+ Container ride-hailing-sharded-simulator-run-74bbafe39548 Created 
+plan: 24985 drivers, 11444 trips, warm start 13787 Trips in progress (0 dropped)
+invariant checker: passed with 0 violations over 11365 Trips

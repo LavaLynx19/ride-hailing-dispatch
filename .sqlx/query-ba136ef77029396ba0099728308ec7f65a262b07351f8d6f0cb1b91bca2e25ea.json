@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, peer_shard, status, trip_id FROM peer_reservations WHERE status = 'confirmed'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "peer_reservations",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "peer_shard",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "peer_reservations",
+            "name": "peer_shard"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "peer_reservations",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "trip_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "peer_reservations",
+            "name": "trip_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "ba136ef77029396ba0099728308ec7f65a262b07351f8d6f0cb1b91bca2e25ea"
+}

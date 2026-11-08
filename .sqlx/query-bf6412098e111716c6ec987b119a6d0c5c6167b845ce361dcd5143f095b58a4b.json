@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE reservations SET status = $2, trip_id = coalesce($3, trip_id), settled_at = now()\n             WHERE id = $1 AND (status = 'reserved' OR (status = 'confirmed' AND $2 = 'released'))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bf6412098e111716c6ec987b119a6d0c5c6167b845ce361dcd5143f095b58a4b"
+}

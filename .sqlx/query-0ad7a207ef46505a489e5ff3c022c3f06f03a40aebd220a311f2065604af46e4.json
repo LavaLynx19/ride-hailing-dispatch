@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT cell, shard FROM shard_map_cells WHERE version = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cell",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "shard_map_cells",
+            "name": "cell"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "shard",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "shard_map_cells",
+            "name": "shard"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "0ad7a207ef46505a489e5ff3c022c3f06f03a40aebd220a311f2065604af46e4"
+}

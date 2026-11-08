@@ -1,0 +1,58 @@
+ Container ride-hailing-sharded-shard-0-1 Running 
+ Container ride-hailing-sharded-postgres-0-1 Running 
+ Container ride-hailing-sharded-postgres-0-1 Waiting 
+ Container ride-hailing-sharded-postgres-0-1 Healthy 
+ Container ride-hailing-sharded-simulator-run-1b232fceb7b4 Creating 
+ Container ride-hailing-sharded-simulator-run-1b232fceb7b4 Created 
+plan: 24985 drivers, 13704 trips, warm start 13787 Trips in progress (0 dropped)
+invariant checker: passed with 0 violations over 13626 Trips
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution
+failure: 10.3s driver connect: IO error: failed to lookup address information: Temporary failure in name resolution

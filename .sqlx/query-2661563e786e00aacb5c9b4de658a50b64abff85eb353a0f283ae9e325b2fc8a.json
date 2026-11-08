@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT t.id AS \"trip!\" FROM trips t JOIN offers o ON o.id = t.offer_id\n           WHERE o.status <> 'accepted' OR o.driver_id <> t.driver_id OR o.ride_request_id <> t.ride_request_id",
+  "query": "SELECT t.id AS \"trip!\" FROM trips t JOIN offers o ON o.id = t.offer_id\n               WHERE o.status <> 'accepted' OR o.driver_id <> t.driver_id OR o.ride_request_id <> t.ride_request_id",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "7ac8c73a3b56ef2708e934e560e0ff79093de584a1d47dd4737c3cc62f9cf4f4"
+  "hash": "2661563e786e00aacb5c9b4de658a50b64abff85eb353a0f283ae9e325b2fc8a"
 }

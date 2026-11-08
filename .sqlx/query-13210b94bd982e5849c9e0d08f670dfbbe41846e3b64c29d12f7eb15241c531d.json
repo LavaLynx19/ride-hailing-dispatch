@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM reservations WHERE driver_id = $1 AND status IN ('reserved', 'confirmed')) AS \"reserved!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reserved!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "13210b94bd982e5849c9e0d08f670dfbbe41846e3b64c29d12f7eb15241c531d"
+}

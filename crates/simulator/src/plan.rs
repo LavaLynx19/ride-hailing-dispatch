@@ -109,6 +109,37 @@ pub struct Scenario {
     pub duration_seconds: i64,
     pub supply_scale: f64,
     pub demand_scale: f64,
+    pub spike: Option<Spike>,
+}
+
+/// Extra demand in one zone for a while: its Ride Requests are multiplied by `multiplier`
+/// on top of the demand scale. Drivers don't react to it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spike {
+    pub zone: u16,
+    /// Seconds into the run.
+    pub start_seconds: f64,
+    pub seconds: f64,
+    pub multiplier: f64,
+}
+
+impl Spike {
+    /// Parses `ZONE,START_SECONDS,SECONDS,MULTIPLIER`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let bad = || format!("spike must be ZONE,START_SECONDS,SECONDS,MULTIPLIER, not {text}");
+        let fields: Vec<&str> = text.split(',').map(str::trim).collect();
+        let [zone, start, seconds, multiplier] = fields.as_slice() else { return Err(bad()) };
+        Ok(Self {
+            zone: zone.parse().map_err(|_| bad())?,
+            start_seconds: start.parse().map_err(|_| bad())?,
+            seconds: seconds.parse().map_err(|_| bad())?,
+            multiplier: multiplier.parse().map_err(|_| bad())?,
+        })
+    }
+
+    fn covers(&self, zone: u16, seconds_into_run: f64) -> bool {
+        zone == self.zone && (self.start_seconds..self.start_seconds + self.seconds).contains(&seconds_into_run)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -237,7 +268,10 @@ fn plan_trips(
             continue;
         }
         let mut rng = Rng::stream(scenario.seed, RIDER_STREAM | row_index as u64);
-        for _ in 0..round_randomly(&mut rng, scenario.demand_scale) {
+        let seconds_into_run = (row.requested_at - scenario.start_epoch) as f64;
+        let spiked = scenario.spike.filter(|spike| spike.covers(row.pickup_zone, seconds_into_run));
+        let copies = scenario.demand_scale * spiked.map_or(1.0, |spike| spike.multiplier);
+        for _ in 0..round_randomly(&mut rng, copies) {
             let Some(pickup) = points.sample(&mut rng, row.pickup_zone) else { continue };
             let dropoff = if UNKNOWN_ZONES.contains(&row.dropoff_zone) {
                 exits.get(&row.pickup_zone).map(|exit| Dropoff::Outside { exit: *exit })
@@ -337,6 +371,7 @@ mod tests {
             duration_seconds: 7200,
             supply_scale: 1.0,
             demand_scale: 1.0,
+            spike: None,
         }
     }
 
@@ -405,6 +440,20 @@ mod tests {
         let half = plan(&Scenario { demand_scale: 0.5, ..scenario(5) }).trips.len();
         assert_eq!(plan(&Scenario { demand_scale: 2.0, ..scenario(5) }).trips.len(), 2000);
         assert!((430..=570).contains(&half), "{half}");
+    }
+
+    #[test]
+    fn a_spike_multiplies_its_zones_requests_inside_its_window_only() {
+        // Fixture demand: 1000 requests in zone 1, one a second from the start.
+        let spike = Spike { zone: 1, start_seconds: 100.0, seconds: 50.0, multiplier: 10.0 };
+        let trips = plan(&Scenario { spike: Some(spike), ..scenario(5) }).trips;
+        assert_eq!(trips.len(), 1000 + 50 * 9);
+        let inside = trips.iter().filter(|t| (100.0..151.0).contains(&t.request_at_seconds)).count();
+        assert!((499..=510).contains(&inside), "{inside}");
+        let elsewhere = Spike { zone: 2, ..spike };
+        assert_eq!(plan(&Scenario { spike: Some(elsewhere), ..scenario(5) }).trips.len(), 1000);
+        assert_eq!(Spike::parse("161, 300, 300, 50").unwrap(), Spike { zone: 161, start_seconds: 300.0, seconds: 300.0, multiplier: 50.0 });
+        assert!(Spike::parse("161,300").is_err());
     }
 
     #[test]

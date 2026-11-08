@@ -43,13 +43,13 @@ Requirements are in [README.md](README.md), design in [ARCHITECTURE.md](ARCHITEC
 - [x] 4.4 Run Direct Offer vs widening experiment (`experiments/matching.md`)
 
 ### Phase 5: Geo-sharding (§P5)
-- [ ] 5.1 Build versioned Cell → Shard map
-- [ ] 5.2 Build boundary search over gRPC
-- [ ] 5.3 Build cross-shard Reservation with expiry and peer check
-- [ ] 5.4 Build idle driver handoff and Trip pinning
-- [ ] 5.5 Run fault injection campaign
-- [ ] 5.6 Run single vs multi-Shard experiment
-- [ ] 5.7 Run hot-Shard spike experiment
+- [x] 5.1 Build versioned Cell → Shard map
+- [x] 5.2 Build boundary search over gRPC
+- [x] 5.3 Build cross-shard Reservation with expiry and peer check
+- [x] 5.4 Build idle driver handoff and Trip pinning
+- [x] 5.5 Run fault injection campaign (`experiments/sharding.md`)
+- [x] 5.6 Run single vs multi-Shard experiment (`experiments/sharding.md`)
+- [x] 5.7 Run hot-Shard spike experiment (`experiments/sharding.md`)
 
 ### Phase 6: ETA and pricing (§P6)
 - [ ] 6.1 Build live-speed ETA
