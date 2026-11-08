@@ -5,15 +5,15 @@ use std::time::Duration;
 
 use simulator::client::{Counters, RunConfig, Silence, run_plan};
 use simulator::metrics::{RunInfo, run_record, summarise};
-use simulator::plan::{Scenario, ZonePoints, build_plan, parse_demand, parse_zone_exits};
+use simulator::plan::{Scenario, Spike, ZonePoints, build_plan, parse_demand, parse_zone_exits};
 use simulator::supply::SupplyTable;
 
 const USAGE: &str = "usage: simulator --data-dir DIR --demand FILE --driver-url URL --rider-url URL \
 --seed N --start-epoch SECONDS --duration-seconds N [--supply-scale X] [--demand-scale X] [--ping-seconds X] \
 [--warmup-seconds X] [--name S] [--git-commit S] [--policy S] [--vm-cpus S] [--vm-memory-gib S] [--simulator-cpus S] \
-[--silent-probability X] [--database-url URL]
+[--silent-probability X] [--database-url URL[,URL...]] [--spike ZONE,START_SECONDS,SECONDS,MULTIPLIER]
 
-With --database-url, the invariant checker runs against the Shard's Postgres after the run.";
+With --database-url, the invariant checker runs against the Shards' Postgres after the run, one URL per Shard in Shard order.";
 
 /// Assumed, not measured: how often an idle driver goes quiet with the socket still open.
 const SILENCE: Silence = Silence { probability: 0.05, min_seconds: 10.0, max_seconds: 60.0 };
@@ -73,6 +73,7 @@ async fn main() -> Result<(), String> {
         duration_seconds: number(&args, "duration-seconds", None)?,
         supply_scale: number(&args, "supply-scale", Some(1.0))?,
         demand_scale: number(&args, "demand-scale", Some(1.0))?,
+        spike: args.get("spike").map(|text| Spike::parse(text)).transpose()?,
     };
     let config = RunConfig {
         driver_urls: required(&args, "driver-url")?.split(',').map(str::to_owned).collect(),
@@ -169,6 +170,7 @@ async fn main() -> Result<(), String> {
         ("trips_completed", get(&counters.trips_completed)),
         ("ride_requests", get(&counters.ride_requests)),
         ("riders_finished", get(&counters.riders_finished)),
+        ("redirects", get(&counters.redirects)),
     ];
     let offer_staleness = counters.offer_staleness.lock().map_err(|_| "staleness samples unavailable")?;
     let summary = summarise(&times, &offer_staleness, warmup_seconds);

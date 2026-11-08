@@ -39,6 +39,7 @@ async fn send_pings(driver_port: u16, range: std::ops::Range<i64>) {
             driver_id: "d1".into(),
             position: Some(LatLng { lat: 40.7, lng: -74.0 }),
             reported_at_ms,
+            map_version: 0,
         };
         let message = DriverToServer { message: Some(driver_to_server::Message::LocationPing(ping)) };
         socket.send(Message::Binary(message.encode_to_vec().into())).await.unwrap();

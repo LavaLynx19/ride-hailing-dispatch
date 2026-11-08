@@ -1,0 +1,125 @@
+# Experiment setup for 1, 2 or 4 Shards, each with its own Postgres, plus the load generator.
+# Shard 0 always runs; `--profile two` adds Shard 1, and `--profile four` adds Shards 1-3.
+# SHARDS (1, 2 or 4) picks the map in deploy/shard-maps/ and must match the profile.
+name: ride-hailing-sharded
+
+x-limits: &limits
+  ulimits:
+    nofile: 200000
+
+# Throwaway experiment data, wiped with `down -v` before and after each run. Trust auth is
+# safe only because no port is published: Postgres is reachable on the internal network alone.
+x-postgres: &postgres
+  image: postgres:18
+  environment:
+    POSTGRES_DB: dispatch
+    POSTGRES_HOST_AUTH_METHOD: trust
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -d dispatch"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+
+x-shard: &shard
+  <<: *limits
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    target: shard
+  image: ride-hailing-dispatch/shard
+  # Several ports, because one client address can reach one server port only about 28,000 times.
+  command:
+    - "0.0.0.0:7001,0.0.0.0:7003,0.0.0.0:7005,0.0.0.0:7007"
+    - "0.0.0.0:7002,0.0.0.0:7004,0.0.0.0:7006,0.0.0.0:7008"
+    - /ping-log
+  # A new named volume belongs to root, and the image has no directory prepared for the app user.
+  user: root
+
+x-shard-env: &shard-env
+  MATCHER: ${MATCHER:-greedy}
+  BATCH_WINDOW_MS: ${BATCH_WINDOW_MS:-}
+  WIDENING: ${WIDENING:-off}
+  SHARD_MAP: /maps/shards-${SHARDS:-1}.txt
+  PEER_LISTEN: 0.0.0.0:7100
+
+services:
+  postgres-0:
+    <<: *postgres
+    volumes: [postgres-0:/var/lib/postgresql]
+  shard-0:
+    <<: *shard
+    environment:
+      <<: *shard-env
+      SHARD_ID: "0"
+      DATABASE_URL: postgres://postgres@postgres-0/dispatch
+    volumes: ["./shard-maps:/maps:ro", "ping-log-0:/ping-log"]
+    depends_on:
+      postgres-0: { condition: service_healthy }
+
+  postgres-1:
+    <<: *postgres
+    profiles: [two, four]
+    volumes: [postgres-1:/var/lib/postgresql]
+  shard-1:
+    <<: *shard
+    profiles: [two, four]
+    environment:
+      <<: *shard-env
+      SHARD_ID: "1"
+      DATABASE_URL: postgres://postgres@postgres-1/dispatch
+    volumes: ["./shard-maps:/maps:ro", "ping-log-1:/ping-log"]
+    depends_on:
+      postgres-1: { condition: service_healthy }
+
+  postgres-2:
+    <<: *postgres
+    profiles: [four]
+    volumes: [postgres-2:/var/lib/postgresql]
+  shard-2:
+    <<: *shard
+    profiles: [four]
+    environment:
+      <<: *shard-env
+      SHARD_ID: "2"
+      DATABASE_URL: postgres://postgres@postgres-2/dispatch
+    volumes: ["./shard-maps:/maps:ro", "ping-log-2:/ping-log"]
+    depends_on:
+      postgres-2: { condition: service_healthy }
+
+  postgres-3:
+    <<: *postgres
+    profiles: [four]
+    volumes: [postgres-3:/var/lib/postgresql]
+  shard-3:
+    <<: *shard
+    profiles: [four]
+    environment:
+      <<: *shard-env
+      SHARD_ID: "3"
+      DATABASE_URL: postgres://postgres@postgres-3/dispatch
+    volumes: ["./shard-maps:/maps:ro", "ping-log-3:/ping-log"]
+    depends_on:
+      postgres-3: { condition: service_healthy }
+
+  simulator:
+    <<: *limits
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: simulator
+    image: ride-hailing-dispatch/simulator
+    cpus: 2
+    depends_on:
+      - shard-0
+    volumes:
+      - ../data/raw:/data:ro
+
+volumes:
+  ping-log-0:
+  ping-log-1:
+  ping-log-2:
+  ping-log-3:
+  postgres-0:
+  postgres-1:
+  postgres-2:
+  postgres-3:

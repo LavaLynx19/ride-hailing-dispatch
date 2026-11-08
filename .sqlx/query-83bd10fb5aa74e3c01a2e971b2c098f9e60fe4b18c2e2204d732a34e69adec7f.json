@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, driver_id, offer_id, ride_request_id, peer_shard, status FROM reservations\n             WHERE status IN ('reserved', 'confirmed') ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reservations",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "driver_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reservations",
+            "name": "driver_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "offer_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reservations",
+            "name": "offer_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "ride_request_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reservations",
+            "name": "ride_request_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "peer_shard",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "reservations",
+            "name": "peer_shard"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reservations",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "83bd10fb5aa74e3c01a2e971b2c098f9e60fe4b18c2e2204d732a34e69adec7f"
+}

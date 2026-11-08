@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT r.id AS \"ride!\", r.status AS \"status!\", count(t.id) AS \"trips!\" FROM ride_requests r\n           LEFT JOIN trips t ON t.ride_request_id = r.id AND t.status <> 'cancelled'\n           GROUP BY r.id, r.status\n           HAVING (r.status = 'assigned') <> (count(t.id) > 0)",
+  "query": "SELECT r.id AS \"ride!\", r.status AS \"status!\", count(t.id) AS \"trips!\" FROM ride_requests r\n               LEFT JOIN trips t ON t.ride_request_id = r.id AND t.status <> 'cancelled'\n               GROUP BY r.id, r.status\n               HAVING (r.status = 'assigned') <> (count(t.id) > 0)",
   "describe": {
     "columns": [
       {
@@ -41,5 +41,5 @@
       null
     ]
   },
-  "hash": "b0f77b8014af98783eaea30a1e7863949546629e93d07647123e90ffde019730"
+  "hash": "6306f6c2f0d14aaa5a26e604cecab0e609de7debdb925885ea71141d2c8be69a"
 }

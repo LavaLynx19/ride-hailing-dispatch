@@ -1443,6 +1443,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-tungstenite",
+ "tonic",
  "zstd",
 ]
 

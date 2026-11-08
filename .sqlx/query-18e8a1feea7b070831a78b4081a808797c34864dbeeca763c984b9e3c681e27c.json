@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE reservations SET status = 'released', settled_at = now() WHERE id = $1 AND status = 'confirmed'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "18e8a1feea7b070831a78b4081a808797c34864dbeeca763c984b9e3c681e27c"
+}

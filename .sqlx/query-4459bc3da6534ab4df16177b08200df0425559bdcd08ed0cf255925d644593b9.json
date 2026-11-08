@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT driver_id AS \"driver!\", count(*) AS \"trips!\" FROM trips\n           WHERE status IN ('assigned', 'arrived', 'started') GROUP BY driver_id HAVING count(*) > 1",
+  "query": "SELECT ride_request_id AS \"ride!\", count(*) AS \"trips!\" FROM trips\n               WHERE status <> 'cancelled' GROUP BY ride_request_id HAVING count(*) > 1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "driver!",
+        "name": "ride!",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "trips",
-            "name": "driver_id"
+            "name": "ride_request_id"
           }
         }
       },
@@ -29,5 +29,5 @@
       null
     ]
   },
-  "hash": "d2e7a028535efb9163508fac1c9caadb8cec1832fda534d09a6da6a71daf6996"
+  "hash": "4459bc3da6534ab4df16177b08200df0425559bdcd08ed0cf255925d644593b9"
 }

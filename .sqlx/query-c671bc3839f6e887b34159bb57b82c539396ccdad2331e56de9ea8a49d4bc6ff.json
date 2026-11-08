@@ -1,50 +1,52 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, driver_id, ride_request_id FROM trips WHERE status <> 'cancelled'",
+  "query": "SELECT p.status, p.trip_id, t.status AS \"trip_status?\" FROM peer_reservations p\n               LEFT JOIN trips t ON t.id = p.trip_id WHERE p.id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "status",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "trips",
-            "name": "id"
+            "table": "peer_reservations",
+            "name": "status"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "driver_id",
+        "name": "trip_id",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "trips",
-            "name": "driver_id"
+            "table": "peer_reservations",
+            "name": "trip_id"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "ride_request_id",
+        "name": "trip_status?",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "trips",
-            "name": "ride_request_id"
+            "name": "status"
           }
         }
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text"
+      ]
     },
     "nullable": [
       false,
-      false,
-      false
+      true,
+      true
     ]
   },
-  "hash": "bb0059c9df2207933f09bc651f8bcb8d701ad74f107fa8dbd38abaf9c614b992"
+  "hash": "c671bc3839f6e887b34159bb57b82c539396ccdad2331e56de9ea8a49d4bc6ff"
 }

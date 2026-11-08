@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT shard, peer, drivers, riders FROM shard_map_shards WHERE version = $1 ORDER BY shard",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "shard",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "shard_map_shards",
+            "name": "shard"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "peer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shard_map_shards",
+            "name": "peer"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "drivers",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shard_map_shards",
+            "name": "drivers"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "riders",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shard_map_shards",
+            "name": "riders"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9e07e8e5daef63bb172e9ad02a60c208edb5dca6c4e05d43be7ad446c5748dd4"
+}

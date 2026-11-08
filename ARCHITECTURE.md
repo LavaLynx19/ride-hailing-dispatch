@@ -107,7 +107,7 @@ Resolution 9 stays fast at every load measured. Resolution 10 is faster when den
 4. Offers can overlap. Accept is atomic and is the only commit point.
 5. A cross-shard Accept uses a Reservation: reserve the driver on their Shard, then confirm the rider on theirs.
 
-**Reservation crash recovery:** peer check is the fast path and expiry is the backstop. A restarted Shard asks its peer whether to complete or abort. If that doesn't resolve it in time, the Reservation expires and any late confirm is rejected. Whichever resolves first must win, and tests must cover the race between them.
+**Reservation crash recovery (revised 2026-11-07):** the peer check decides; expiry only limits when a Confirm can succeed. A Shard holding an unresolved Reservation asks the rider's Shard for its status, at restart and on a retry timer, and never frees the driver on its own. The earlier rule, where expiry freed the driver if the peer check didn't answer in time, could break the invariant: if the Confirm succeeded but its reply was lost and the rider's Shard then stayed unreachable past expiry, the driver would be free on one Shard with a Trip on the other. The race between a late Confirm and a status check is settled in the rider's Shard's Postgres (see Sharding), and tests must cover it.
 
 **Driver ownership:** an idle driver belongs to the Shard for their current location. A driver on a Trip stays with the Shard that owns the Trip until it ends.
 
@@ -138,6 +138,24 @@ The Shard runs one policy per run, set by `MATCHER`, `BATCH_WINDOW_MS` and `WIDE
 - **Why cold runs couldn't be scarce (2026-11-04):** with every driver idle at the start and few Trips finishing within 20 minutes, drivers only get used up. At 0.5× idle drivers fell to about 2,600 but never ran out, batches held about one ride, and every window gave the same 26.7 s mean pickup leg. At 0.35× and 0.25× idle drivers ran out after about 16 and 11 minutes, then the queue grew without limit (880 and 3,476 waiting rides at the end, first-offer p99 76 s and 381 s). These runs passed the invariant checker and are kept, but don't count as scenario results.
 - **Why 0.65× for scarce:** the supply table assumes 60% utilisation, so at a supply-to-demand ratio r, trip time alone keeps 0.6 / r of drivers busy. At 0.5× that is 120%, so a warm run would be overloaded in steady state. At 0.75× it is 80%, which the check confirmed leaves too many idle. At 0.65× it is about 92%, plus pickup time, which should leave a small idle margin with local shortages.
 - **PLAN's verify example:** P4's example (r1: d1 1 min, d2 4 min; r2: d1 3 min, d2 15 min) can't come from straight-line distances, because no positions satisfy the triangle inequality for it. It is checked against the solver with a cost table instead. Dispatcher tests use a swap that positions can produce.
+
+### Sharding (decided 2026-11-07)
+
+- **Shard map:** resolution-7 Cells (about 5 km²) grouped into N contiguous regions of roughly equal demand, built from September demand by `build_shard_map`. It halves the map again and again across its wider side, at the weighted median, so N is a power of two. Resolution 6 was chosen first but is too coarse: NYC has only 43 such Cells and one in Midtown holds about 10% of demand, giving 58/42 at 2 Shards and 47.5/10.8/21.7/20.1 at 4. At resolution 7 (217 Cells) the splits are 52/48 and 26/26/24/24. The maps are in `deploy/shard-maps/`. Each version is a numbered list of Cell → Shard rows plus each Shard's addresses, stored in every Shard's Postgres. A Cell missing from the map belongs to the Shard of its nearest mapped Cell. Correctness work and fault tests use 2 Shards; the single vs multi-Shard experiment uses 1, 2 and 4.
+- **Routing by redirect:** clients know every Shard's address but not the map. A Shard that gets a connection, Ride Request or ping from a Cell it doesn't own replies with a redirect to the owner and the map version. The client reconnects there, and the old Shard drops the driver from its index. A redirect to a Shard with an older map version is ignored by that Shard, which answers with its own redirect only once it has the newer map.
+- **Boundary search (revised 2026-11-08):** every 250 ms tick, each Shard asks each neighbour for its idle drivers in the neighbour's Cells within 2 rings (about 5 km) of its own, and keeps the answer as a second index. Remote drivers join the same greedy, auction or Broadcast pass as local ones. This replaced a query per Ride Request, which would have held each boundary ride for a round trip and made the synchronous matcher wait on the network; the cost is a snapshot up to one tick old, which is safe because the driver's Shard refuses a relayed offer to a driver no longer free.
+- **Cross-shard offers:** the rider's Shard B stores the offer in its own Postgres and asks the driver's Shard A to deliver it. A delivers only to a driver who is online, free and holding no other offer, and keeps it in memory only. Declines and A's withdrawals (silence, redirect, expiry) go back to B; B's expiry goes to A. B doesn't run silence checks on a peer's driver, since it gets no pings from them.
+- **Cross-shard Accept:** the Accept arrives on A.
+  1. A reserves the driver in its Postgres, with an expiry 5 s ahead. A driver with an open or confirmed Reservation can't be reserved or assigned again on A.
+  2. A asks B to confirm. In one transaction, B checks the Ride Request is open and that the expiry hasn't passed, then creates the Trip and records the Reservation as confirmed, or records it as aborted or expired.
+  3. A records the outcome and tells the driver. On confirm, the confirmed Reservation becomes a lease, and the driver is redirected to B, pinned there until the Trip ends.
+- **Settling races:** B keys Reservations by id. A status check for an id B has never seen records it as aborted before answering, so a Confirm still in flight is rejected. Confirm and status check go through the same row, so whichever commits first wins.
+- **Lease release:** when the Trip ends or is cancelled, B tells A to release the lease. If that call is lost, A asks B for the Trip's status when the driver next connects to A, or on a retry timer.
+- **Trip ownership:** the Trip, Ride Request and Offer rows stay on B, the rider's Shard. Each Shard's unique indexes hold locally, and the lease keeps A from assigning a driver who has a Trip on B.
+- **Ordering:** the rider's Shard records a confirmed Trip in memory before it replies, because the driver connects to it as soon as their Shard hears the answer, and must find their Trip there. A leased driver who reconnects to their own Shard while the peer still has the Trip is sent back to the peer.
+- **Values:** 5 s Reservation expiry, kept after the fault campaign (2026-11-08): peer-call delays up to 4.5 s caused no expiries, and delays up to 9 s caused expiries that both Shards recorded alike. With a 2 s call timeout, a Confirm and one retry fit inside it. Boundary snapshot over 2 res-7 rings, every 250 ms tick. At 1× load, 1, 2 and 4 Shards gave the same waits within the spread over seeds, so the number of Shards is left for the Phase 8 capacity runs (`experiments/sharding.md`).
+- **Fault hooks:** `PEER_FAULTS` drops requests or replies and delays peer calls; `CRASH_AT` aborts the process at a Reservation step (after reserving, after confirming, before recording the answer, before releasing a lease). Both are off unless set.
+- **Invariant checker:** reads every Shard's Postgres, and checks the invariant across them plus that every confirmed Reservation matches exactly one Trip.
 
 ## Data model
 
@@ -179,12 +197,12 @@ Each run records its seed, load, Staleness budget and VM limits. A result counts
 ## Open items
 
 - Docker VM: 14 CPUs and about 7.7 GiB of memory as currently configured, on a 24 GiB machine. Enough for a 30-minute 100k run with Postgres, at about 3.5 GiB peak. Shard memory grows with Trips in progress, about 9 KB each, and should level off once completions match new Trips; a run longer than 30 minutes would confirm it (`experiments/assignment.md`).
-- Values: offer and Reservation timeouts; number of Shards. Batch Window is set at 250 ms (see Matching policy on one Shard). Silent-driver timeouts have starting values (see Assignment on one Shard); Phase 3 runs at 5% assumed silence didn't press them, so they stay until a harsher silence model does.
+- Values: offer timeouts. Reservation expiry is set (see Sharding); number of Shards waits for Phase 8 load. Batch Window is set at 250 ms (see Matching policy on one Shard). Silent-driver timeouts have starting values (see Assignment on one Shard); Phase 3 runs at 5% assumed silence didn't press them, so they stay until a harsher silence model does.
 - Supply threshold for widening: the 1.0 / 1.5 / 60 s starting values showed no flapping in Phase 4 (48–71 switches per 20-minute run, at most 22 areas broadcasting), but switches are only counted in total, not per area. Widening made scarce waits about 1 s worse at that load, so tuning it waits for a denser-demand test such as the Phase 6 spikes (`experiments/matching.md`).
 - Quote validity window and controller tuning.
 - First-offer max of about 3.8 s with Postgres, against p99 of 3–4 ms; to explain before the Phase 8 strict test (`experiments/assignment.md`). Likely the startup surge of every idle driver connecting at once: 5–7.6 s in Phase 4 runs that start with about 11,000 idle drivers, and 0.68 s with about 4,900. A separate 20 s max appears on scarce seed 1 under every policy, so it most likely comes from that seed's demand. Neither is confirmed by timestamps yet (`experiments/matching.md`).
 - Connection failures: the ones seen so far are Docker DNS lookups failing at about 10 s, during the startup surge ("Temporary failure in name resolution"). This is a test-setup artefact; retries recover the drivers.
-- Hot-Shard behaviour under a 50x spike.
+- Hot-Shard compute: a 50x Midtown spike at 1x load drained the hot Shard's drivers but barely raised its CPU (11% of a core, against 10% for the others), so a spike that overloads one Shard is untested. Phase 8 load should show it (`experiments/sharding.md`).
 - Reusing `payment-ledger` for the final phase; reading it needs explicit permission.
 
 ## Decision Log
@@ -197,7 +215,7 @@ Latency numbers need real time, but policy comparisons need reproducible runs, s
 
 ### Accept owner is a two-step Reservation, not a global store
 
-A global assignment store would be the easiest way to keep assignments correct, but it would be a bottleneck and would undercut geo-partitioning. Reservations keep ownership in the Shards, at the cost of a crash window that expiry and peer checks must close.
+A global assignment store would be the easiest way to keep assignments correct, but it would be a bottleneck and would undercut geo-partitioning. Reservations keep ownership in the Shards, at the cost of a crash window that expiry and peer checks must close. Revised 2026-11-07: the peer check alone closes it. A Shard that can't reach its peer keeps the reserved driver out of matching rather than guess, because a guess can break the invariant. That costs availability for the few drivers caught mid-Reservation while a peer is down.
 
 ### Accept commits outside the dispatcher task
 

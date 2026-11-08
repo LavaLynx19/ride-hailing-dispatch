@@ -132,6 +132,21 @@ impl LocationIndex {
         }
         area.children(self.resolution).filter_map(|cell| self.cells.get(&cell)).map(HashSet::len).sum()
     }
+
+    /// The drivers inside `area`, as `count_in` counts them, with their positions, sorted by id.
+    pub fn drivers_in(&self, area: CellIndex) -> Vec<(&str, Position)> {
+        if area.resolution() > self.resolution {
+            return Vec::new();
+        }
+        let mut found: Vec<(&str, Position)> = area
+            .children(self.resolution)
+            .filter_map(|cell| self.cells.get(&cell))
+            .flatten()
+            .map(|id| (id.as_str(), self.entries[id].position))
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(b.0));
+        found
+    }
 }
 
 struct Search<'a, F> {
@@ -306,6 +321,8 @@ mod tests {
         let area = cell_of(NYC, Resolution::Seven).unwrap();
         assert_eq!(index.count_in(area), 2);
         assert_eq!(index.count_in(cell_of(NYC, Resolution::Ten).unwrap()), 0, "finer than the index counts nothing");
+        let found: Vec<&str> = index.drivers_in(area).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(found, ["d1", "d2"]);
     }
 
     #[test]

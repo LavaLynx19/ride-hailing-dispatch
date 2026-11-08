@@ -2,52 +2,114 @@ syntax = "proto3";
 
 package dispatch.shard;
 
+// Calls between Shards. Shard A is the driver's Shard, B the rider's: B finds A's drivers
+// near the boundary and offers through A; A reserves the driver and asks B to confirm.
+// See ARCHITECTURE.md → Sharding.
 service Shard {
+  // B → A: idle drivers in these Cells.
   rpc SearchBoundaryDrivers(SearchBoundaryDriversRequest) returns (SearchBoundaryDriversResponse);
-  rpc Reserve(ReserveRequest) returns (ReserveResponse);
-  rpc Confirm(ReservationRef) returns (ReservationState);
-  rpc Abort(ReservationRef) returns (ReservationState);
+  // B → A: deliver B's offer to A's driver.
+  rpc RelayOffer(RelayOfferRequest) returns (RelayOfferResponse);
+  // B → A: B's offer is gone (expired, or the ride went elsewhere).
+  rpc WithdrawOffer(OfferRef) returns (Empty);
+  // A → B: the driver declined B's offer, or A had to withdraw it.
+  rpc CloseOffer(CloseOfferRequest) returns (Empty);
+  // A → B: the driver accepted B's offer and A holds a Reservation; assign if still possible.
+  rpc Confirm(ConfirmRequest) returns (ReservationState);
+  // A → B: what became of a Reservation. One B has never seen is recorded as aborted.
   rpc GetReservationStatus(ReservationRef) returns (ReservationState);
+  // B → A: the Trip behind a confirmed Reservation has ended.
+  rpc Release(ReservationRef) returns (Empty);
+  // Operator → any Shard: store and serve a new map version.
+  rpc ApplyShardMap(ShardMapText) returns (ShardMapVersion);
+}
+
+message Empty {}
+
+message LatLng {
+  double lat = 1;
+  double lng = 2;
 }
 
 message SearchBoundaryDriversRequest {
-  repeated uint64 cells = 1;
-  uint32 limit = 2;
+  uint32 from_shard = 1;
+  repeated uint64 cells = 2;
 }
 
 message BoundaryDriver {
   string driver_id = 1;
-  uint64 cell = 2;
-  int64 reported_at_ms = 3;
+  LatLng position = 2;
 }
 
 message SearchBoundaryDriversResponse {
   repeated BoundaryDriver drivers = 1;
 }
 
-message ReserveRequest {
-  string reservation_id = 1;
-  string driver_id = 2;
-  string ride_request_id = 3;
+message RelayOfferRequest {
+  uint32 from_shard = 1;
+  string offer_id = 2;
+  string driver_id = 3;
+  string ride_request_id = 4;
+  LatLng pickup = 5;
+  int64 expires_at_ms = 6;
 }
 
-message ReserveResponse {
-  bool reserved = 1;
-  int64 expires_at_ms = 2;
+message RelayOfferResponse {
+  // False when the driver is no longer available on this Shard.
+  bool delivered = 1;
+}
+
+message OfferRef {
+  uint32 from_shard = 1;
+  string offer_id = 2;
+}
+
+enum OfferClose {
+  OFFER_CLOSE_UNSPECIFIED = 0;
+  OFFER_CLOSE_DECLINED = 1;
+  OFFER_CLOSE_WITHDRAWN = 2;
+  OFFER_CLOSE_EXPIRED = 3;
+}
+
+message CloseOfferRequest {
+  uint32 from_shard = 1;
+  string offer_id = 2;
+  OfferClose reason = 3;
+}
+
+message ConfirmRequest {
+  uint32 from_shard = 1;
+  string reservation_id = 2;
+  string offer_id = 3;
+  string driver_id = 4;
+  string ride_request_id = 5;
+  // After this, B refuses to confirm.
+  int64 expires_at_ms = 6;
 }
 
 message ReservationRef {
-  string reservation_id = 1;
+  uint32 from_shard = 1;
+  string reservation_id = 2;
 }
 
 enum ReservationStatus {
   RESERVATION_STATUS_UNSPECIFIED = 0;
-  RESERVATION_STATUS_RESERVED = 1;
-  RESERVATION_STATUS_CONFIRMED = 2;
-  RESERVATION_STATUS_ABORTED = 3;
-  RESERVATION_STATUS_EXPIRED = 4;
+  RESERVATION_STATUS_CONFIRMED = 1;
+  RESERVATION_STATUS_ABORTED = 2;
+  RESERVATION_STATUS_EXPIRED = 3;
+  // Confirmed, and the Trip has since ended.
+  RESERVATION_STATUS_RELEASED = 4;
 }
 
 message ReservationState {
   ReservationStatus status = 1;
+  string trip_id = 2;
+}
+
+message ShardMapText {
+  string text = 1;
+}
+
+message ShardMapVersion {
+  uint32 version = 1;
 }

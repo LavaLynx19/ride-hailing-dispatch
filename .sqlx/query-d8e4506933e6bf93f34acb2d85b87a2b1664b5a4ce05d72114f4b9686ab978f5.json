@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO peer_reservations (id, peer_shard, status) VALUES ($1, $2, 'aborted') ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d8e4506933e6bf93f34acb2d85b87a2b1664b5a4ce05d72114f4b9686ab978f5"
+}

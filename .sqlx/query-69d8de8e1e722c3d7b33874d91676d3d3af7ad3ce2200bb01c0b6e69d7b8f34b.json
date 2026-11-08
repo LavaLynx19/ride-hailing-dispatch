@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.trip_id AS \"trip!\", p.peer_shard, p.id FROM peer_reservations p\n               JOIN trips t ON t.id = p.trip_id\n               WHERE p.status = 'confirmed' AND t.status IN ('assigned', 'arrived', 'started')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "trip!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "peer_reservations",
+            "name": "trip_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "peer_shard",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "peer_reservations",
+            "name": "peer_shard"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "peer_reservations",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "69d8de8e1e722c3d7b33874d91676d3d3af7ad3ce2200bb01c0b6e69d7b8f34b"
+}

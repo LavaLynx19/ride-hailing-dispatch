@@ -10,6 +10,7 @@ futures-util = "0.3.34"
 geo = { version = "0.1.0", path = "../geo" }
 prost = "0.14.4"
 protocol = { version = "0.1.0", path = "../protocol" }
+tonic = "0.14.9"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tokio-tungstenite = "0.30.0"
 zstd = "0.14.3"

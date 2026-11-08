@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO reservations (id, driver_id, offer_id, ride_request_id, peer_shard, expires_at, status)\n             VALUES ($1, $2, $3, $4, $5, to_timestamp($6::bigint / 1000.0), 'reserved') ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int2",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "52c373154b0a1d0213ce26176dbae7df01f3b97ed4799ef34d7e0062f63b467d"
+}
